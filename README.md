@@ -6,35 +6,22 @@
   <code>nix run github:andrewgazelka/record</code>
 </p>
 
-Transparent PTY wrapper exposing a Unix socket API for terminal introspection.
+Give Claude Code (or any AI agent) access to your terminal. Run `record` in Ghostty/iTerm/any terminal, and AI tools can read your scrollback, see what's running, and inject commands - without terminal emulator integration.
 
-## Features
+## Why
 
-- **Scrollback access**: Read terminal output programmatically
-- **Input injection**: Send keystrokes to the session
-- **Live streaming**: Subscribe to output in real-time
-- **Zero config**: Just wrap any command
+Claude Code runs in its own sandbox. It can't see your other terminal tabs. With `record`:
 
-## Use Case
-
-AI terminal agents (like Claude Code) monitoring long-running processes:
-
-```
-Terminal                          AI Agent
-┌──────────────────────┐         ┌──────────────────────┐
-│ $ record             │         │ Read scrollback      │
-│ [session abc...]     │───────▶ │ Inject commands      │
-│ $ npm run dev        │  Unix   │ Monitor output       │
-│ Server on :3000      │  Socket │                      │
-└──────────────────────┘         └──────────────────────┘
-```
+1. Run `record` in a terminal tab
+2. Start a dev server, SSH session, or anything
+3. Claude Code reads the output via Unix socket
+4. Claude Code can type commands into that session
 
 ## Usage
 
 ```sh
 record              # instrumented shell
-record htop         # instrumented htop
-record ssh server   # instrumented ssh
+record npm run dev  # instrumented command
 ```
 
 ```sh
@@ -49,7 +36,7 @@ Connect to `~/.record/<session-id>.sock`:
 
 ```json
 {"type": "get_scrollback", "lines": 50}
-{"type": "inject", "data": "ls -la\n"}
+{"type": "inject", "data": "curl localhost:3000\n"}
 {"type": "subscribe"}
 ```
 
