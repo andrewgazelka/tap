@@ -1,0 +1,27 @@
+{
+  "name": "rec",
+  "owner": {
+    "name": "Andrew Gazelka",
+    "email": "andrew.gazelka@gmail.com"
+  },
+  "metadata": {
+    "description": "Terminal recording and introspection tools for Claude Code",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "rec",
+      "source": "./plugins/rec",
+      "description": "See and control other terminal windows from Claude Code",
+      "version": "0.1.0",
+      "author": {
+        "name": "Andrew Gazelka"
+      },
+      "homepage": "https://github.com/andrewgazelka/record",
+      "repository": "https://github.com/andrewgazelka/record",
+      "license": "MIT",
+      "keywords": ["terminal", "pty", "recording", "introspection"],
+      "category": "developer-tools"
+    }
+  ]
+}
