@@ -1,9 +1,10 @@
-use std::path::PathBuf;
+//! Client library for interacting with record sessions.
 
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+
+pub use record_protocol::{Request, Response, Session, sessions_file, socket_dir, socket_path};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -21,76 +22,40 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Session {
-    pub id: String,
-    pub pid: u32,
-    pub started: String,
-    pub command: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Request {
-    GetScrollback { lines: Option<usize> },
-    GetCursor,
-    Inject { data: String },
-    GetSize,
-    Subscribe,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Response {
-    Scrollback { content: String },
-    Cursor { row: usize, col: usize },
-    Size { rows: u16, cols: u16 },
-    Output { data: Vec<u8> },
-    Subscribed,
-    Ok,
-    Error { message: String },
-}
-
-fn get_socket_dir() -> PathBuf {
-    dirs::runtime_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".record")))
-        .unwrap_or_else(|| PathBuf::from("/tmp/record"))
-}
-
-/// List all active record sessions
+/// List all active record sessions.
 pub fn list_sessions() -> Result<Vec<Session>> {
-    let sessions_file = get_socket_dir().join("sessions.json");
+    let sessions_file = sessions_file();
     let content = std::fs::read_to_string(&sessions_file).unwrap_or_else(|_| "[]".to_string());
     let sessions: Vec<Session> = serde_json::from_str(&content)?;
 
     // Filter to only sessions with valid sockets
     let sessions: Vec<Session> = sessions
         .into_iter()
-        .filter(|s| get_socket_dir().join(format!("{}.sock", s.id)).exists())
+        .filter(|s| socket_path(&s.id).exists())
         .collect();
 
     Ok(sessions)
 }
 
-/// Client for interacting with a record session
+/// Client for interacting with a record session.
 pub struct Client {
     stream: BufReader<UnixStream>,
 }
 
 impl Client {
-    /// Connect to a session by ID
+    /// Connect to a session by ID.
     pub async fn connect(session_id: &str) -> Result<Self> {
-        let socket_path = get_socket_dir().join(format!("{session_id}.sock"));
-        if !socket_path.exists() {
+        let path = socket_path(session_id);
+        if !path.exists() {
             return Err(Error::SessionNotFound(session_id.to_string()));
         }
-        let stream = UnixStream::connect(&socket_path).await?;
+        let stream = UnixStream::connect(&path).await?;
         Ok(Self {
             stream: BufReader::new(stream),
         })
     }
 
-    /// Connect to the most recent session
+    /// Connect to the most recent session.
     pub async fn connect_latest() -> Result<Self> {
         let sessions = list_sessions()?;
         let session = sessions.last().ok_or(Error::NoSessions)?;
@@ -107,7 +72,7 @@ impl Client {
         Ok(response)
     }
 
-    /// Get scrollback buffer content
+    /// Get scrollback buffer content.
     pub async fn get_scrollback(&mut self, lines: Option<usize>) -> Result<String> {
         let response = self.send_request(&Request::GetScrollback { lines }).await?;
         match response {
@@ -117,7 +82,7 @@ impl Client {
         }
     }
 
-    /// Get cursor position (row, col)
+    /// Get cursor position (row, col).
     pub async fn get_cursor(&mut self) -> Result<(usize, usize)> {
         let response = self.send_request(&Request::GetCursor).await?;
         match response {
@@ -127,7 +92,7 @@ impl Client {
         }
     }
 
-    /// Get terminal size (rows, cols)
+    /// Get terminal size (rows, cols).
     pub async fn get_size(&mut self) -> Result<(u16, u16)> {
         let response = self.send_request(&Request::GetSize).await?;
         match response {
@@ -137,7 +102,7 @@ impl Client {
         }
     }
 
-    /// Inject input into the PTY
+    /// Inject input into the PTY.
     pub async fn inject(&mut self, data: &str) -> Result<()> {
         let response = self
             .send_request(&Request::Inject {
@@ -150,6 +115,33 @@ impl Client {
             _ => Err(Error::Server("Unexpected response".to_string())),
         }
     }
+
+    /// Subscribe to live output stream.
+    /// After calling this, use `read_output()` to receive output chunks.
+    pub async fn subscribe(&mut self) -> Result<()> {
+        let response = self.send_request(&Request::Subscribe).await?;
+        match response {
+            Response::Subscribed => Ok(()),
+            Response::Error { message } => Err(Error::Server(message)),
+            _ => Err(Error::Server("Unexpected response".to_string())),
+        }
+    }
+
+    /// Read the next output chunk after subscribing.
+    /// Returns None if the connection is closed.
+    pub async fn read_output(&mut self) -> Result<Option<Vec<u8>>> {
+        let mut line = String::new();
+        let n = self.stream.read_line(&mut line).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        let response: Response = serde_json::from_str(&line)?;
+        match response {
+            Response::Output { data } => Ok(Some(data)),
+            Response::Error { message } => Err(Error::Server(message)),
+            _ => Err(Error::Server("Unexpected response".to_string())),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -158,7 +150,7 @@ mod tests {
 
     #[test]
     fn test_socket_dir() {
-        let dir = get_socket_dir();
+        let dir = socket_dir();
         assert!(!dir.as_os_str().is_empty());
     }
 
