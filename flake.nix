@@ -24,7 +24,7 @@
 
       commonArgs = {
         inherit src;
-        pname = "record";
+        pname = "rec";
         strictDeps = true;
 
         buildInputs = lib.optionals pkgs.stdenv.isDarwin [
@@ -34,13 +34,13 @@
 
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-      record = craneLib.buildPackage (commonArgs
+      rec-cli = craneLib.buildPackage (commonArgs
         // {
           inherit cargoArtifacts;
         });
     in {
-      inherit record;
-      default = record;
+      rec = rec-cli;
+      default = rec-cli;
     });
 
     checks = forAllSystems (system: let
@@ -52,7 +52,7 @@
 
       commonArgs = {
         inherit src;
-        pname = "record";
+        pname = "rec";
         strictDeps = true;
 
         buildInputs = lib.optionals pkgs.stdenv.isDarwin [
@@ -62,17 +62,17 @@
 
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
     in {
-      record = self.packages.${system}.record;
+      rec = self.packages.${system}.rec;
 
-      record-clippy = craneLib.cargoClippy (commonArgs
+      rec-clippy = craneLib.cargoClippy (commonArgs
         // {
           inherit cargoArtifacts;
           cargoClippyExtraArgs = "--all-targets -- --deny warnings";
         });
 
-      record-fmt = craneLib.cargoFmt {inherit src;};
+      rec-fmt = craneLib.cargoFmt {inherit src;};
 
-      record-test = craneLib.cargoTest (commonArgs
+      rec-test = craneLib.cargoTest (commonArgs
         // {
           inherit cargoArtifacts;
         });

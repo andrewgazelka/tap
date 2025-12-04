@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.metadata.crane]
-name = "record"
+name = "rec"
 
 [workspace.package]
 version = "0.1.0"
@@ -28,7 +28,7 @@ nix = { version = "0.30", features = ["term", "signal", "process", "fs"] }
 bytes = "1"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
-uuid = { version = "1", features = ["v4"] }
+human-id = { git = "https://github.com/andrewgazelka/human-id" }
 parking_lot = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 vt100 = "0.15"

@@ -9,12 +9,12 @@ use tokio::io::AsyncWriteExt;
 #[command(name = "rec", about = "Terminal recording and introspection")]
 struct Args {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Start a recording session.
+    /// Start a recording session (default when no command given).
     Start {
         /// Command to run (defaults to $SHELL).
         #[arg(trailing_var_arg = true)]
@@ -66,6 +66,15 @@ async fn get_client(session: Option<String>) -> eyre::Result<Client> {
     }
 }
 
+async fn run_start(command: Vec<String>) -> eyre::Result<()> {
+    let config = ServerConfig {
+        command,
+        session_id: None,
+    };
+    let exit_code = record_server::run(config).await?;
+    std::process::exit(exit_code);
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     color_eyre::install()?;
@@ -75,24 +84,22 @@ async fn main() -> eyre::Result<()> {
 
     let args = Args::parse();
 
-    match args.command {
+    // Default to Start if no command given
+    let command = args.command.unwrap_or(Command::Start { command: vec![] });
+
+    match command {
         Command::Start { command } => {
-            let config = ServerConfig {
-                command,
-                session_id: None,
-            };
-            let exit_code = record_server::run(config).await?;
-            std::process::exit(exit_code);
+            run_start(command).await?;
         }
         Command::List => {
             let sessions = list_sessions()?;
             if sessions.is_empty() {
                 println!("No active sessions");
             } else {
-                println!("{:<38} {:<8} {:<25} COMMAND", "ID", "PID", "STARTED");
+                println!("{:<25} {:<8} {:<25} COMMAND", "ID", "PID", "STARTED");
                 for session in sessions {
                     println!(
-                        "{:<38} {:<8} {:<25} {}",
+                        "{:<25} {:<8} {:<25} {}",
                         session.id,
                         session.pid,
                         session.started,

@@ -26,7 +26,7 @@ static MASTER_FD: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
 pub struct ServerConfig {
     /// Command to run (defaults to $SHELL if empty).
     pub command: Vec<String>,
-    /// Custom session ID (auto-generated UUID if None).
+    /// Custom session ID (auto-generated human-readable ID if None).
     pub session_id: Option<String>,
 }
 
@@ -196,7 +196,7 @@ fn wait_for_child(child: Pid) -> i32 {
 pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
     let session_id = config
         .session_id
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        .unwrap_or_else(|| human_id::gen_id(3));
 
     let socket_dir = record_protocol::socket_dir();
     std::fs::create_dir_all(&socket_dir)?;
