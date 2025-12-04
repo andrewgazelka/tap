@@ -24,6 +24,7 @@ clap.workspace = true
 uuid.workspace = true
 parking_lot.workspace = true
 chrono.workspace = true
+vt100.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
