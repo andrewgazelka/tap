@@ -39,5 +39,5 @@
   <text x="280" y="95" font-family="system-ui, -apple-system, sans-serif" font-size="64" font-weight="700" fill="#ffffff">record</text>
 
   <!-- Subtitle -->
-  <text x="280" y="130" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#8b949e">Invisible PTY instrumentation</text>
+  <text x="280" y="130" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#8b949e">Let AI see your terminal</text>
 </svg>
