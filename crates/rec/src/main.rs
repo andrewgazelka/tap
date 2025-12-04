@@ -1,0 +1,136 @@
+//! Unified CLI for record terminal sessions.
+
+use clap::{Parser, Subcommand};
+use record_client::{Client, list_sessions};
+use record_server::ServerConfig;
+use tokio::io::AsyncWriteExt;
+
+#[derive(Parser)]
+#[command(name = "rec", about = "Terminal recording and introspection")]
+struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Start a recording session.
+    Start {
+        /// Command to run (defaults to $SHELL).
+        #[arg(trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+    /// List all active sessions.
+    List,
+    /// Get scrollback buffer from a session.
+    Scrollback {
+        /// Session ID (uses latest if not specified).
+        #[arg(short, long)]
+        session: Option<String>,
+        /// Number of lines to retrieve.
+        #[arg(short, long)]
+        lines: Option<usize>,
+    },
+    /// Get cursor position.
+    Cursor {
+        /// Session ID (uses latest if not specified).
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+    /// Get terminal size.
+    Size {
+        /// Session ID (uses latest if not specified).
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+    /// Inject input into a session.
+    Inject {
+        /// Session ID (uses latest if not specified).
+        #[arg(short, long)]
+        session: Option<String>,
+        /// Text to inject.
+        text: String,
+    },
+    /// Subscribe to live output stream.
+    Subscribe {
+        /// Session ID (uses latest if not specified).
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+}
+
+async fn get_client(session: Option<String>) -> eyre::Result<Client> {
+    match session {
+        Some(id) => Client::connect(&id).await.map_err(Into::into),
+        None => Client::connect_latest().await.map_err(Into::into),
+    }
+}
+
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    color_eyre::install()?;
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    let args = Args::parse();
+
+    match args.command {
+        Command::Start { command } => {
+            let config = ServerConfig {
+                command,
+                session_id: None,
+            };
+            let exit_code = record_server::run(config).await?;
+            std::process::exit(exit_code);
+        }
+        Command::List => {
+            let sessions = list_sessions()?;
+            if sessions.is_empty() {
+                println!("No active sessions");
+            } else {
+                println!("{:<38} {:<8} {:<25} COMMAND", "ID", "PID", "STARTED");
+                for session in sessions {
+                    println!(
+                        "{:<38} {:<8} {:<25} {}",
+                        session.id,
+                        session.pid,
+                        session.started,
+                        session.command.join(" ")
+                    );
+                }
+            }
+        }
+        Command::Scrollback { session, lines } => {
+            let mut client = get_client(session).await?;
+            let content = client.get_scrollback(lines).await?;
+            print!("{content}");
+        }
+        Command::Cursor { session } => {
+            let mut client = get_client(session).await?;
+            let (row, col) = client.get_cursor().await?;
+            println!("Row: {row}, Col: {col}");
+        }
+        Command::Size { session } => {
+            let mut client = get_client(session).await?;
+            let (rows, cols) = client.get_size().await?;
+            println!("{rows}x{cols}");
+        }
+        Command::Inject { session, text } => {
+            let mut client = get_client(session).await?;
+            client.inject(&text).await?;
+            println!("Injected");
+        }
+        Command::Subscribe { session } => {
+            let mut client = get_client(session).await?;
+            client.subscribe().await?;
+            let mut stdout = tokio::io::stdout();
+            while let Some(data) = client.read_output().await? {
+                stdout.write_all(&data).await?;
+                stdout.flush().await?;
+            }
+        }
+    }
+
+    Ok(())
+}

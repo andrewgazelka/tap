@@ -1,0 +1,22 @@
+[package]
+name = "rec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CLI for record terminal sessions"
+
+[[bin]]
+name = "rec"
+path = "src/main.rs"
+
+[dependencies]
+record-protocol.workspace = true
+record-server.workspace = true
+record-client.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+eyre.workspace = true
+color-eyre.workspace = true
