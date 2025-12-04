@@ -1,0 +1,68 @@
+//! Shared protocol types for record terminal sessions.
+
+use serde::{Deserialize, Serialize};
+
+/// Session metadata stored in sessions.json.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    pub id: String,
+    pub pid: u32,
+    pub started: String,
+    pub command: Vec<String>,
+}
+
+/// Client requests to the server.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Request {
+    /// Get the last N lines from scrollback buffer.
+    GetScrollback { lines: Option<usize> },
+    /// Get current cursor position.
+    GetCursor,
+    /// Inject input into the PTY.
+    Inject { data: String },
+    /// Get terminal size.
+    GetSize,
+    /// Subscribe to live output.
+    Subscribe,
+}
+
+/// Server responses.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Response {
+    /// Scrollback buffer content.
+    Scrollback { content: String },
+    /// Cursor position.
+    Cursor { row: usize, col: usize },
+    /// Terminal size.
+    Size { rows: u16, cols: u16 },
+    /// Live output data (for subscribed clients).
+    Output { data: Vec<u8> },
+    /// Subscription confirmed.
+    Subscribed,
+    /// Success.
+    Ok,
+    /// Error.
+    Error { message: String },
+}
+
+/// Get the socket directory path.
+#[must_use]
+pub fn socket_dir() -> std::path::PathBuf {
+    dirs::runtime_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".record")))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/record"))
+}
+
+/// Get socket path for a session ID.
+#[must_use]
+pub fn socket_path(session_id: &str) -> std::path::PathBuf {
+    socket_dir().join(format!("{session_id}.sock"))
+}
+
+/// Get the sessions index file path.
+#[must_use]
+pub fn sessions_file() -> std::path::PathBuf {
+    socket_dir().join("sessions.json")
+}
