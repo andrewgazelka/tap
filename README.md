@@ -1,91 +1,58 @@
 <p align="center">
-  <img src="assets/header.svg" alt="record" width="600"/>
+  <img src=".github/assets/header.svg" alt="record" width="100%"/>
 </p>
 
 <p align="center">
-  <strong>Invisible PTY instrumentation</strong>
+  <code>nix run github:andrewgazelka/record</code>
 </p>
 
----
+Transparent PTY wrapper exposing a Unix socket API for terminal introspection.
 
-A transparent PTY wrapper that exposes a Unix socket API for terminal introspection. Run any command inside `record` and gain programmatic access to its scrollback buffer, cursor position, and input injection—without modifying the command itself.
+## Features
+
+- **Scrollback access**: Read terminal output programmatically
+- **Input injection**: Send keystrokes to the session
+- **Live streaming**: Subscribe to output in real-time
+- **Zero config**: Just wrap any command
 
 ## Use Case
 
-**AI terminal agents** (like Claude Code) can monitor and interact with long-running processes:
+AI terminal agents (like Claude Code) monitoring long-running processes:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  Terminal                                                   │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │ $ record                                              │  │
-│  │ [session abc123...]                                   │  │
-│  │ $ npm run dev                                         │  │
-│  │ Server running on http://localhost:3000               │  │
-│  │ █                                                     │  │
-│  └───────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-                           │
-                           │ Unix Socket
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│  AI Agent                                                   │
-│  • Read scrollback: "Server running on..."                  │
-│  • Inject commands: "curl localhost:3000"                   │
-│  • Monitor output in real-time                              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Install
-
-```sh
-# nix
-nix run github:andrewgazelka/record
-
-# cargo
-cargo install --git https://github.com/andrewgazelka/record
+Terminal                          AI Agent
+┌──────────────────────┐         ┌──────────────────────┐
+│ $ record             │         │ Read scrollback      │
+│ [session abc...]     │───────▶ │ Inject commands      │
+│ $ npm run dev        │  Unix   │ Monitor output       │
+│ Server on :3000      │  Socket │                      │
+└──────────────────────┘         └──────────────────────┘
 ```
 
 ## Usage
 
 ```sh
-# Start instrumented shell
-record
-
-# Run specific command
-record htop
-record ssh server
-record npm run dev
+record              # instrumented shell
+record htop         # instrumented htop
+record ssh server   # instrumented ssh
 ```
 
-## Client
-
 ```sh
-# List active sessions
-record-client list
-
-# Get scrollback (last 100 lines)
-record-client scrollback -l 100
-
-# Inject input
-record-client inject "echo hello"
-
-# Get terminal size
-record-client size
+record-client list              # list sessions
+record-client scrollback -l 50  # last 50 lines
+record-client inject "ls\n"     # send input
 ```
 
 ## Protocol
 
-Clients connect via Unix socket at `~/.record/<session-id>.sock` and send JSON:
+Connect to `~/.record/<session-id>.sock`:
 
 ```json
 {"type": "get_scrollback", "lines": 50}
-{"type": "get_cursor"}
-{"type": "get_size"}
 {"type": "inject", "data": "ls -la\n"}
 {"type": "subscribe"}
 ```
 
-## License
+---
 
 MIT
