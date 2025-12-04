@@ -6,38 +6,43 @@
   <code>nix run github:andrewgazelka/record</code>
 </p>
 
-Give Claude Code (or any AI agent) access to your terminal. Run `record` in Ghostty/iTerm/any terminal, and AI tools can read your scrollback, see what's running, and inject commands - without terminal emulator integration.
+Let Claude Code see and control your other terminal windows.
 
-## Why
+## The Problem
 
-Claude Code runs in its own sandbox. It can't see your other terminal tabs. With `record`:
+You're running a dev server in one terminal tab. You ask Claude Code to check if it's working. But Claude Code can't see that tab - it only sees its own terminal.
 
-1. Run `record` in a terminal tab
-2. Start a dev server, SSH session, or anything
-3. Claude Code reads the output via Unix socket
-4. Claude Code can type commands into that session
-
-## Usage
+## The Solution
 
 ```sh
-record              # instrumented shell
-record npm run dev  # instrumented command
+# In your terminal (Ghostty, iTerm, Terminal.app, etc.)
+record
+
+# Now Claude Code can:
+# - See everything printed to this terminal
+# - Type commands into this terminal
+# - Watch for errors in real-time
 ```
+
+That's it. Run `record` instead of opening a plain shell, and Claude Code gains visibility into that session.
+
+## Example
 
 ```sh
-record-client list              # list sessions
-record-client scrollback -l 50  # last 50 lines
-record-client inject "ls\n"     # send input
+# Terminal 1: Run record, then start your server
+record
+npm run dev
+
+# Terminal 2: Claude Code can now see "Server running on :3000"
+# and can run "curl localhost:3000" in Terminal 1
 ```
 
-## Protocol
+## Commands
 
-Connect to `~/.record/<session-id>.sock`:
-
-```json
-{"type": "get_scrollback", "lines": 50}
-{"type": "inject", "data": "curl localhost:3000\n"}
-{"type": "subscribe"}
+```sh
+record-client list         # see active sessions
+record-client scrollback   # read terminal output
+record-client inject "ls"  # type into the terminal
 ```
 
 ---
