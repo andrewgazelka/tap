@@ -1,0 +1,13 @@
+[package]
+name = "tap-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Configuration for tap terminal sessions"
+
+[dependencies]
+serde.workspace = true
+toml = "0.8"
+dirs.workspace = true
+eyre.workspace = true

@@ -1,5 +1,7 @@
 //! PTY wrapper server library for terminal introspection.
 
+mod editor;
+mod input;
 mod scrollback;
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -194,6 +196,11 @@ fn wait_for_child(child: Pid) -> i32 {
 /// Run the PTY server with the given configuration.
 /// Returns the exit code of the child process.
 pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
+    // Load tap config for keybinds
+    let tap_config = tap_config::load()?;
+    let mut input_processor = input::InputProcessor::new(&tap_config)?;
+    let editor_cmd = tap_config::get_editor(&tap_config);
+
     let session_id = config
         .session_id
         .unwrap_or_else(|| human_id::gen_id(3));
@@ -352,16 +359,44 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                 match result {
                     Ok(0) => break 0,
                     Ok(n) => {
-                        let fd = unsafe { OwnedFd::from_raw_fd(master_raw_fd) };
-                        if unistd::write(&fd, &stdin_buf[..n]).is_err() {
-                            std::mem::forget(fd);
-                            break 1;
+                        match input_processor.process(&stdin_buf[..n]) {
+                            input::InputResult::Passthrough(bytes) => {
+                                if !bytes.is_empty() {
+                                    let fd = unsafe { OwnedFd::from_raw_fd(master_raw_fd) };
+                                    if unistd::write(&fd, &bytes).is_err() {
+                                        std::mem::forget(fd);
+                                        break 1;
+                                    }
+                                    std::mem::forget(fd);
+                                }
+                            }
+                            input::InputResult::Action(input::KeybindAction::OpenEditor) => {
+                                let scrollback_content = SCROLLBACK.read().get_lines(None);
+                                if let Err(e) = editor::open_scrollback_in_editor(
+                                    &scrollback_content,
+                                    &editor_cmd,
+                                    orig_termios.as_ref(),
+                                ) {
+                                    error!("Failed to open editor: {e}");
+                                }
+                            }
+                            input::InputResult::NeedMore => {
+                                // Wait for timeout or more input
+                            }
                         }
-                        std::mem::forget(fd);
                     }
                     Err(e) => {
                         debug!("Stdin read error: {e}");
                         break 0;
+                    }
+                }
+            }
+            _ = tokio::time::sleep(input_processor.escape_timeout()), if input_processor.has_pending_escape() => {
+                if let input::InputResult::Passthrough(bytes) = input_processor.timeout_escape() {
+                    if !bytes.is_empty() {
+                        let fd = unsafe { OwnedFd::from_raw_fd(master_raw_fd) };
+                        let _ = unistd::write(&fd, &bytes);
+                        std::mem::forget(fd);
                     }
                 }
             }

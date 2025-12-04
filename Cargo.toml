@@ -16,6 +16,7 @@ authors = ["Andrew Gazelka <andrew.gazelka@gmail.com>"]
 tap-protocol = { path = "crates/tap-protocol" }
 tap-server = { path = "crates/tap-server" }
 tap-client = { path = "crates/tap-client" }
+tap-config = { path = "crates/tap-config" }
 
 # External dependencies
 tokio = { version = "1", features = ["full"] }
@@ -34,3 +35,5 @@ chrono = { version = "0.4", features = ["serde"] }
 vt100 = "0.15"
 eyre = "0.6"
 color-eyre = "0.6"
+toml = "0.8"
+tempfile = "3"
