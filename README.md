@@ -41,6 +41,24 @@ record-client scrollback   # read terminal output
 record-client inject "ls"  # type into the terminal
 ```
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph record
+        PTY[PTY Master]
+        SB[Scrollback Buffer]
+        Sock[Unix Socket]
+    end
+
+    Shell[Shell/Command] <-->|stdin/stdout| PTY
+    PTY --> SB
+    PTY --> Sock
+
+    Client[record-client] <-->|JSON| Sock
+    Claude[Claude Code] --> Client
+```
+
 ---
 
 MIT
