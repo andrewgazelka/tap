@@ -25,3 +25,4 @@ chrono.workspace = true
 vt100.workspace = true
 eyre.workspace = true
 tempfile.workspace = true
+crossterm.workspace = true

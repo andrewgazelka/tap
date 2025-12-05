@@ -50,6 +50,8 @@ impl InputProcessor {
 
     /// Process input bytes, returning what action to take.
     pub fn process(&mut self, bytes: &[u8]) -> InputResult {
+        tracing::debug!("Input bytes: {:?} (hex: {:02x?})", bytes, bytes);
+
         if bytes.is_empty() {
             if self.pending_escape {
                 self.pending_escape = false;
@@ -70,7 +72,9 @@ impl InputProcessor {
 
         // Check for keybind matches
         for (keybind, action) in &self.keybinds {
+            tracing::debug!("Checking keybind {:?} against {:02x?}", keybind, effective_bytes);
             if let Some(consumed) = keybind.matches(&effective_bytes) {
+                tracing::debug!("Keybind matched! consumed={}", consumed);
                 // If there are remaining bytes after the keybind, we'd need to handle them
                 // For now, assume keybinds consume all input in that read
                 if consumed == effective_bytes.len() {
@@ -173,6 +177,18 @@ mod tests {
         match proc.process(&[b'x']) {
             InputResult::Passthrough(bytes) => assert_eq!(bytes, vec![0x1b, b'x']),
             _ => panic!("Expected passthrough"),
+        }
+    }
+
+    #[test]
+    fn test_ctrl_e_triggers_action() {
+        let mut config = tap_config::Config::default();
+        config.keybinds.editor = "Ctrl-e".to_string();
+        let mut proc = InputProcessor::new(&config).unwrap();
+        // Ctrl-e is 0x05
+        match proc.process(&[0x05]) {
+            InputResult::Action(KeybindAction::OpenEditor) => {}
+            other => panic!("Expected OpenEditor action, got {:?}", other),
         }
     }
 }

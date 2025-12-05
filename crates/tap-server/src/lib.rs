@@ -7,6 +7,10 @@ mod scrollback;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixListener as StdUnixListener;
 
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
+use crossterm::execute;
 use nix::libc;
 use nix::pty::{self, OpenptyResult, Winsize};
 use nix::sys::signal::{self, SigHandler, Signal};
@@ -303,6 +307,26 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
     // Don't close stdin
     std::mem::forget(stdin_fd);
 
+    // Enable Kitty keyboard protocol for proper Alt-key detection
+    let keyboard_enhanced = if orig_termios.is_some() {
+        let mut stdout = std::io::stdout();
+        match execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        ) {
+            Ok(()) => {
+                debug!("Enabled Kitty keyboard protocol");
+                true
+            }
+            Err(e) => {
+                debug!("Kitty keyboard protocol not supported: {e}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     // Set up broadcast channel for output
     let (output_tx, _) = broadcast::channel::<Vec<u8>>(1024);
 
@@ -359,7 +383,9 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                 match result {
                     Ok(0) => break 0,
                     Ok(n) => {
-                        match input_processor.process(&stdin_buf[..n]) {
+                        let input_bytes = &stdin_buf[..n];
+                        debug!("stdin received {} bytes: {:02x?}", n, input_bytes);
+                        match input_processor.process(input_bytes) {
                             input::InputResult::Passthrough(bytes) => {
                                 if !bytes.is_empty() {
                                     let fd = unsafe { OwnedFd::from_raw_fd(master_raw_fd) };
@@ -371,6 +397,7 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                                 }
                             }
                             input::InputResult::Action(input::KeybindAction::OpenEditor) => {
+                                debug!("OpenEditor action triggered!");
                                 let scrollback_content = SCROLLBACK.read().get_lines(None);
                                 if let Err(e) = editor::open_scrollback_in_editor(
                                     &scrollback_content,
@@ -402,6 +429,13 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
             }
         }
     };
+
+    // Disable Kitty keyboard protocol
+    if keyboard_enhanced {
+        let mut stdout = std::io::stdout();
+        let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+        debug!("Disabled Kitty keyboard protocol");
+    }
 
     // Restore terminal
     if let Some(ref termios) = orig_termios {
