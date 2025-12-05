@@ -72,7 +72,11 @@ impl InputProcessor {
 
         // Check for keybind matches
         for (keybind, action) in &self.keybinds {
-            tracing::debug!("Checking keybind {:?} against {:02x?}", keybind, effective_bytes);
+            tracing::debug!(
+                "Checking keybind {:?} against {:02x?}",
+                keybind,
+                effective_bytes
+            );
             if let Some(consumed) = keybind.matches(&effective_bytes) {
                 tracing::debug!("Keybind matched! consumed={}", consumed);
                 // If there are remaining bytes after the keybind, we'd need to handle them

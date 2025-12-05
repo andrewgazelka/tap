@@ -181,15 +181,11 @@ impl Keybind {
         // Alt = 2, so Alt modifier = 3
         // Ctrl = 4, so Ctrl modifier = 5
         let matches = match self {
-            Keybind::Alt(_) => modifiers == 3, // Alt only
+            Keybind::Alt(_) => modifiers == 3,  // Alt only
             Keybind::Ctrl(_) => modifiers == 5, // Ctrl only
         };
 
-        if matches {
-            Some(u_pos + 1)
-        } else {
-            None
-        }
+        if matches { Some(u_pos + 1) } else { None }
     }
 }
 

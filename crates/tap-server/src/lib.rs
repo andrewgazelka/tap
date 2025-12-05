@@ -17,8 +17,8 @@ use nix::sys::signal::{self, SigHandler, Signal};
 use nix::sys::termios::{self, SetArg, Termios};
 use nix::unistd::{self, ForkResult, Pid};
 use parking_lot::RwLock;
-use tap_protocol::{Request, Response};
 use scrollback::ScrollbackBuffer;
+use tap_protocol::{Request, Response};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
@@ -205,9 +205,7 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
     let mut input_processor = input::InputProcessor::new(&tap_config)?;
     let editor_cmd = tap_config::get_editor(&tap_config);
 
-    let session_id = config
-        .session_id
-        .unwrap_or_else(|| human_id::gen_id(3));
+    let session_id = config.session_id.unwrap_or_else(|| human_id::gen_id(3));
 
     let socket_dir = tap_protocol::socket_dir();
     std::fs::create_dir_all(&socket_dir)?;
