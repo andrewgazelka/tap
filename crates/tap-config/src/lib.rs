@@ -1,5 +1,11 @@
 //! Configuration for tap terminal sessions.
 
+use eyre::WrapErr as _;
+
+const DEFAULT_EDITOR_KEYBIND: &str = "Alt-e";
+const DEFAULT_ESCAPE_TIMEOUT_MS: u64 = 50;
+const DEFAULT_EDITOR: &str = "vi";
+
 /// Main configuration structure.
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -33,7 +39,7 @@ pub struct TimingConfig {
 impl Default for KeybindConfig {
     fn default() -> Self {
         Self {
-            editor: "Alt-e".to_string(),
+            editor: DEFAULT_EDITOR_KEYBIND.to_string(),
         }
     }
 }
@@ -41,7 +47,7 @@ impl Default for KeybindConfig {
 impl Default for TimingConfig {
     fn default() -> Self {
         Self {
-            escape_timeout_ms: 50,
+            escape_timeout_ms: DEFAULT_ESCAPE_TIMEOUT_MS,
         }
     }
 }
@@ -59,8 +65,10 @@ pub fn config_path() -> std::path::PathBuf {
 pub fn load() -> eyre::Result<Config> {
     let path = config_path();
     if path.exists() {
-        let content = std::fs::read_to_string(&path)?;
-        let config: Config = toml::from_str(&content)?;
+        let content = std::fs::read_to_string(&path)
+            .wrap_err_with(|| format!("failed to read config from {}", path.display()))?;
+        let config: Config = toml::from_str(&content)
+            .wrap_err_with(|| format!("failed to parse config from {}", path.display()))?;
         Ok(config)
     } else {
         Ok(Config::default())
@@ -75,7 +83,7 @@ pub fn get_editor(config: &Config) -> String {
         .clone()
         .or_else(|| std::env::var("EDITOR").ok())
         .or_else(|| std::env::var("VISUAL").ok())
-        .unwrap_or_else(|| "vi".to_string())
+        .unwrap_or_else(|| DEFAULT_EDITOR.to_string())
 }
 
 /// Parsed keybind representation.
@@ -90,18 +98,18 @@ impl Keybind {
     pub fn parse(s: &str) -> eyre::Result<Self> {
         let parts: Vec<&str> = s.split('-').collect();
         if parts.len() != 2 {
-            eyre::bail!("Invalid keybind format: {s}");
+            eyre::bail!("invalid keybind format '{s}' — expected 'Alt-<key>' or 'Ctrl-<key>'");
         }
         let modifier = parts[0].to_lowercase();
         let key = parts[1]
             .chars()
             .next()
-            .ok_or_else(|| eyre::eyre!("Missing key in keybind: {s}"))?;
+            .ok_or_else(|| eyre::eyre!("missing key in keybind '{s}'"))?;
 
         match modifier.as_str() {
             "alt" => Ok(Keybind::Alt(key)),
             "ctrl" => Ok(Keybind::Ctrl(key.to_ascii_lowercase())),
-            _ => eyre::bail!("Unknown modifier: {modifier}"),
+            _ => eyre::bail!("unknown modifier '{modifier}' — expected 'Alt' or 'Ctrl'"),
         }
     }
 
@@ -140,13 +148,23 @@ impl Keybind {
     /// Match Kitty keyboard protocol sequences: CSI <codepoint>;<modifiers>u
     /// Modifiers: 1=none, 2=shift, 3=alt, 4=shift+alt, 5=ctrl, etc.
     fn matches_kitty(&self, bytes: &[u8]) -> Option<usize> {
+        const CSI_ESC: u8 = 0x1b;
+        const CSI_BRACKET: u8 = b'[';
+        const KITTY_TERMINATOR: u8 = b'u';
+        const MIN_KITTY_SEQ_LEN: usize = 4;
+        const ALT_MODIFIER: u32 = 3;
+        const CTRL_MODIFIER: u32 = 5;
+
         // Must start with CSI (ESC [)
-        if bytes.len() < 4 || bytes[0] != 0x1b || bytes[1] != b'[' {
+        if bytes.len() < MIN_KITTY_SEQ_LEN
+            || bytes[0] != CSI_ESC
+            || bytes[1] != CSI_BRACKET
+        {
             return None;
         }
 
         // Find the 'u' terminator
-        let u_pos = bytes.iter().position(|&b| b == b'u')?;
+        let u_pos = bytes.iter().position(|&b| b == KITTY_TERMINATOR)?;
         if u_pos < 3 {
             return None;
         }
@@ -168,11 +186,9 @@ impl Keybind {
         }
 
         // Check modifiers (encoded as modifier_value + 1)
-        // Alt = 2, so Alt modifier = 3
-        // Ctrl = 4, so Ctrl modifier = 5
         let matches = match self {
-            Keybind::Alt(_) => modifiers == 3,  // Alt only
-            Keybind::Ctrl(_) => modifiers == 5, // Ctrl only
+            Keybind::Alt(_) => modifiers == ALT_MODIFIER,
+            Keybind::Ctrl(_) => modifiers == CTRL_MODIFIER,
         };
 
         if matches { Some(u_pos + 1) } else { None }
@@ -214,8 +230,8 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.keybinds.editor, "Alt-e");
-        assert_eq!(config.timing.escape_timeout_ms, 50);
+        assert_eq!(config.keybinds.editor, DEFAULT_EDITOR_KEYBIND);
+        assert_eq!(config.timing.escape_timeout_ms, DEFAULT_ESCAPE_TIMEOUT_MS);
     }
 
     #[test]
