@@ -1,18 +1,16 @@
 //! Unified CLI for tap terminal sessions.
 
-use clap::{Parser, Subcommand};
-use tap_client::{Client, list_sessions};
-use tap_server::ServerConfig;
-use tokio::io::AsyncWriteExt;
+use eyre::WrapErr as _;
+use tokio::io::AsyncWriteExt as _;
 
-#[derive(Parser)]
+#[derive(clap::Parser)]
 #[command(name = "tap", about = "Terminal introspection and control")]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
 }
 
-#[derive(Subcommand)]
+#[derive(clap::Subcommand)]
 enum Command {
     /// Start a recording session (default when no command given).
     Start {
@@ -59,15 +57,19 @@ enum Command {
     },
 }
 
-async fn get_client(session: Option<String>) -> eyre::Result<Client> {
+async fn get_client(session: Option<String>) -> eyre::Result<tap_client::Client> {
     match session {
-        Some(id) => Client::connect(&id).await.map_err(Into::into),
-        None => Client::connect_latest().await.map_err(Into::into),
+        Some(id) => tap_client::Client::connect(&id)
+            .await
+            .wrap_err_with(|| format!("failed to connect to session '{id}'")),
+        None => tap_client::Client::connect_latest()
+            .await
+            .wrap_err("failed to connect to latest session"),
     }
 }
 
 async fn run_start(command: Vec<String>) -> eyre::Result<()> {
-    let config = ServerConfig {
+    let config = tap_server::ServerConfig {
         command,
         session_id: None,
     };
@@ -82,7 +84,7 @@ async fn main() -> eyre::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let args = Args::parse();
+    let args = <Args as clap::Parser>::parse();
 
     // Default to Start if no command given
     let command = args.command.unwrap_or(Command::Start { command: vec![] });
@@ -92,7 +94,7 @@ async fn main() -> eyre::Result<()> {
             run_start(command).await?;
         }
         Command::List => {
-            let sessions = list_sessions()?;
+            let sessions = tap_client::list_sessions()?;
             if sessions.is_empty() {
                 println!("No active sessions");
             } else {
