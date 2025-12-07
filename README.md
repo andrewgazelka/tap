@@ -46,6 +46,16 @@ tap inject "ls"      # type into the terminal
 tap subscribe        # stream live output
 ```
 
+## Shell Integration
+
+### Ghostty
+
+Add to your Ghostty config (`~/.config/ghostty/config`):
+
+```
+command = tap
+```
+
 ## Architecture
 
 ```mermaid
