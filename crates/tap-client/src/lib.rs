@@ -1,22 +1,20 @@
 //! Client library for interacting with tap sessions.
 
-use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 pub use tap_protocol::{Request, Response, Session, sessions_file, socket_dir, socket_path};
 
-#[derive(Debug, Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("No sessions found")]
+    #[error("no active tap sessions found — start one with `tap`")]
     NoSessions,
-    #[error("Session not found: {0}")]
+    #[error("session '{0}' not found — run `tap list` to see active sessions")]
     SessionNotFound(String),
-    #[error("Server error: {0}")]
+    #[error("server error: {0}")]
     Server(String),
 }
 
@@ -39,7 +37,7 @@ pub fn list_sessions() -> Result<Vec<Session>> {
 
 /// Client for interacting with a tap session.
 pub struct Client {
-    stream: BufReader<UnixStream>,
+    stream: tokio::io::BufReader<tokio::net::UnixStream>,
 }
 
 impl Client {
@@ -49,9 +47,9 @@ impl Client {
         if !path.exists() {
             return Err(Error::SessionNotFound(session_id.to_string()));
         }
-        let stream = UnixStream::connect(&path).await?;
+        let stream = tokio::net::UnixStream::connect(&path).await?;
         Ok(Self {
-            stream: BufReader::new(stream),
+            stream: tokio::io::BufReader::new(stream),
         })
     }
 
@@ -78,7 +76,7 @@ impl Client {
         match response {
             Response::Scrollback { content } => Ok(content),
             Response::Error { message } => Err(Error::Server(message)),
-            _ => Err(Error::Server("Unexpected response".to_string())),
+            _ => Err(Error::Server("unexpected response".to_string())),
         }
     }
 
@@ -88,7 +86,7 @@ impl Client {
         match response {
             Response::Cursor { row, col } => Ok((row, col)),
             Response::Error { message } => Err(Error::Server(message)),
-            _ => Err(Error::Server("Unexpected response".to_string())),
+            _ => Err(Error::Server("unexpected response".to_string())),
         }
     }
 
@@ -98,7 +96,7 @@ impl Client {
         match response {
             Response::Size { rows, cols } => Ok((rows, cols)),
             Response::Error { message } => Err(Error::Server(message)),
-            _ => Err(Error::Server("Unexpected response".to_string())),
+            _ => Err(Error::Server("unexpected response".to_string())),
         }
     }
 
@@ -112,7 +110,7 @@ impl Client {
         match response {
             Response::Ok => Ok(()),
             Response::Error { message } => Err(Error::Server(message)),
-            _ => Err(Error::Server("Unexpected response".to_string())),
+            _ => Err(Error::Server("unexpected response".to_string())),
         }
     }
 
@@ -123,7 +121,7 @@ impl Client {
         match response {
             Response::Subscribed => Ok(()),
             Response::Error { message } => Err(Error::Server(message)),
-            _ => Err(Error::Server("Unexpected response".to_string())),
+            _ => Err(Error::Server("unexpected response".to_string())),
         }
     }
 
@@ -139,7 +137,7 @@ impl Client {
         match response {
             Response::Output { data } => Ok(Some(data)),
             Response::Error { message } => Err(Error::Server(message)),
-            _ => Err(Error::Server("Unexpected response".to_string())),
+            _ => Err(Error::Server("unexpected response".to_string())),
         }
     }
 }
