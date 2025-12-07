@@ -1,11 +1,11 @@
 //! Input processing with keybind detection.
 
-use std::time::Duration;
+const ESC_BYTE: u8 = 0x1b;
 
 /// Input processor state machine for detecting keybinds.
 pub struct InputProcessor {
     keybinds: Vec<(tap_config::Keybind, KeybindAction)>,
-    escape_timeout: Duration,
+    escape_timeout: std::time::Duration,
     pending_escape: bool,
 }
 
@@ -33,13 +33,13 @@ impl InputProcessor {
 
         Ok(Self {
             keybinds,
-            escape_timeout: Duration::from_millis(config.timing.escape_timeout_ms),
+            escape_timeout: std::time::Duration::from_millis(config.timing.escape_timeout_ms),
             pending_escape: false,
         })
     }
 
     #[must_use]
-    pub fn escape_timeout(&self) -> Duration {
+    pub fn escape_timeout(&self) -> std::time::Duration {
         self.escape_timeout
     }
 
@@ -55,7 +55,7 @@ impl InputProcessor {
         if bytes.is_empty() {
             if self.pending_escape {
                 self.pending_escape = false;
-                return InputResult::Passthrough(vec![0x1b]);
+                return InputResult::Passthrough(vec![ESC_BYTE]);
             }
             return InputResult::Passthrough(vec![]);
         }
@@ -63,7 +63,7 @@ impl InputProcessor {
         // Check if we have a pending escape and new input
         let effective_bytes = if self.pending_escape {
             self.pending_escape = false;
-            let mut v = vec![0x1b];
+            let mut v = vec![ESC_BYTE];
             v.extend_from_slice(bytes);
             v
         } else {
@@ -91,7 +91,7 @@ impl InputProcessor {
         }
 
         // Check if this is just an escape byte that might be start of Alt sequence
-        if effective_bytes.len() == 1 && effective_bytes[0] == 0x1b {
+        if effective_bytes.len() == 1 && effective_bytes[0] == ESC_BYTE {
             self.pending_escape = true;
             return InputResult::NeedMore;
         }
@@ -103,7 +103,7 @@ impl InputProcessor {
     pub fn timeout_escape(&mut self) -> InputResult {
         if self.pending_escape {
             self.pending_escape = false;
-            InputResult::Passthrough(vec![0x1b])
+            InputResult::Passthrough(vec![ESC_BYTE])
         } else {
             InputResult::Passthrough(vec![])
         }
@@ -131,7 +131,7 @@ mod tests {
     #[test]
     fn test_escape_triggers_pending() {
         let mut proc = default_processor();
-        match proc.process(&[0x1b]) {
+        match proc.process(&[ESC_BYTE]) {
             InputResult::NeedMore => {}
             _ => panic!("Expected NeedMore for lone ESC"),
         }
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn test_alt_e_triggers_action() {
         let mut proc = default_processor();
-        match proc.process(&[0x1b, b'e']) {
+        match proc.process(&[ESC_BYTE, b'e']) {
             InputResult::Action(KeybindAction::OpenEditor) => {}
             _ => panic!("Expected OpenEditor action"),
         }
@@ -151,7 +151,7 @@ mod tests {
     fn test_pending_escape_then_e() {
         let mut proc = default_processor();
         // First, lone ESC
-        match proc.process(&[0x1b]) {
+        match proc.process(&[ESC_BYTE]) {
             InputResult::NeedMore => {}
             _ => panic!("Expected NeedMore"),
         }
@@ -165,9 +165,9 @@ mod tests {
     #[test]
     fn test_pending_escape_timeout() {
         let mut proc = default_processor();
-        proc.process(&[0x1b]);
+        proc.process(&[ESC_BYTE]);
         match proc.timeout_escape() {
-            InputResult::Passthrough(bytes) => assert_eq!(bytes, vec![0x1b]),
+            InputResult::Passthrough(bytes) => assert_eq!(bytes, vec![ESC_BYTE]),
             _ => panic!("Expected passthrough of ESC"),
         }
         assert!(!proc.has_pending_escape());
@@ -176,10 +176,10 @@ mod tests {
     #[test]
     fn test_escape_then_other_key() {
         let mut proc = default_processor();
-        proc.process(&[0x1b]);
+        proc.process(&[ESC_BYTE]);
         // Non-matching key
         match proc.process(b"x") {
-            InputResult::Passthrough(bytes) => assert_eq!(bytes, vec![0x1b, b'x']),
+            InputResult::Passthrough(bytes) => assert_eq!(bytes, vec![ESC_BYTE, b'x']),
             _ => panic!("Expected passthrough"),
         }
     }
