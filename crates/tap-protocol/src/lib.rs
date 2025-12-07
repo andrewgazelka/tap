@@ -1,9 +1,7 @@
 //! Shared protocol types for tap terminal sessions.
 
-use serde::{Deserialize, Serialize};
-
 /// Session metadata stored in sessions.json.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Session {
     pub id: String,
     pub pid: u32,
@@ -12,7 +10,7 @@ pub struct Session {
 }
 
 /// Client requests to the server.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
     /// Get the last N lines from scrollback buffer.
@@ -28,7 +26,7 @@ pub enum Request {
 }
 
 /// Server responses.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     /// Scrollback buffer content.
