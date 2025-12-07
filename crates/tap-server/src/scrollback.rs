@@ -1,6 +1,8 @@
 const DEFAULT_SCROLLBACK_LINES: usize = 10000;
+const DEFAULT_TERMINAL_ROWS: u16 = 24;
+const DEFAULT_TERMINAL_COLS: u16 = 80;
 
-/// A scrollback buffer backed by vt100 terminal emulator
+/// A scrollback buffer backed by vt100 terminal emulator.
 pub struct ScrollbackBuffer {
     parser: Option<vt100::Parser>,
     max_lines: usize,
@@ -15,8 +17,9 @@ impl ScrollbackBuffer {
     }
 
     fn ensure_parser(&mut self) -> &mut vt100::Parser {
-        self.parser
-            .get_or_insert_with(|| vt100::Parser::new(24, 80, self.max_lines))
+        self.parser.get_or_insert_with(|| {
+            vt100::Parser::new(DEFAULT_TERMINAL_ROWS, DEFAULT_TERMINAL_COLS, self.max_lines)
+        })
     }
 
     pub fn push(&mut self, data: &[u8]) {
