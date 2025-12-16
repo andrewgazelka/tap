@@ -441,12 +441,24 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                                 if !bytes.is_empty() {
                                     // If inner app doesn't support kitty protocol, translate
                                     // CSI u sequences to traditional terminal input
-                                    let bytes_to_send =
-                                        if KITTY_STATE.read().inner_supports_kitty {
+                                    let inner_supports_kitty = KITTY_STATE.read().inner_supports_kitty;
+                                    let bytes_to_send = if inner_supports_kitty {
+                                        tracing::debug!(
+                                            "passthrough (kitty=true): {:02x?}",
                                             bytes
-                                        } else {
-                                            kitty::translate_all_csi_u(&bytes)
-                                        };
+                                        );
+                                        bytes
+                                    } else {
+                                        let translated = kitty::translate_all_csi_u(&bytes);
+                                        if translated != bytes {
+                                            tracing::debug!(
+                                                "translated CSI u: {:02x?} -> {:02x?}",
+                                                bytes,
+                                                translated
+                                            );
+                                        }
+                                        translated
+                                    };
 
                                     let fd = unsafe { BorrowedFd::borrow_raw(master_raw_fd) };
                                     if nix::unistd::write(fd, &bytes_to_send).is_err() {

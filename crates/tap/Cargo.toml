@@ -20,3 +20,4 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 eyre.workspace = true
 color-eyre.workspace = true
+dirs.workspace = true

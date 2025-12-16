@@ -28,10 +28,19 @@ impl KittyState {
         let mut i = 0;
         while i < data.len() {
             if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'[' {
+                // Log potential kitty sequences for debugging
+                let seq_preview: Vec<u8> = data[i..].iter().take(20).copied().collect();
+                tracing::debug!("checking PTY output for kitty seq at {}: {:02x?}", i, seq_preview);
+
                 if let Some((enabled, consumed)) = self.parse_kitty_sequence(&data[i..]) {
                     if let Some(e) = enabled {
+                        let old = self.inner_supports_kitty;
                         self.inner_supports_kitty = e;
-                        tracing::debug!("inner kitty support changed to: {}", e);
+                        tracing::info!(
+                            "KITTY PROTOCOL: inner app {} kitty support (was: {})",
+                            if e { "ENABLED" } else { "DISABLED" },
+                            old
+                        );
                     }
                     i += consumed;
                     continue;

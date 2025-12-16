@@ -6,6 +6,10 @@ use tokio::io::AsyncWriteExt as _;
 #[derive(clap::Parser)]
 #[command(name = "tap", about = "Terminal introspection and control")]
 struct Args {
+    /// Enable debug logging to ~/.tap/debug.log
+    #[arg(long, global = true)]
+    debug: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -80,11 +84,29 @@ async fn run_start(command: Vec<String>) -> eyre::Result<()> {
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     color_eyre::install()?;
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
 
     let args = <Args as clap::Parser>::parse();
+
+    // Setup logging
+    if args.debug {
+        let log_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".tap");
+        std::fs::create_dir_all(&log_dir)?;
+        let log_file = std::fs::File::create(log_dir.join("debug.log"))?;
+
+        tracing_subscriber::fmt()
+            .with_writer(log_file)
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .init();
+
+        tracing::info!("debug logging enabled to ~/.tap/debug.log");
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .init();
+    }
 
     // Default to Start if no command given
     let command = args.command.unwrap_or(Command::Start { command: vec![] });
