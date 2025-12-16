@@ -248,7 +248,15 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
     let socket_path = tap_protocol::socket_path(&session_id);
 
     let command = if config.command.is_empty() {
-        vec![std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string())]
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
+        // Force interactive mode for shells that need it
+        if shell.ends_with("/nu") || shell.ends_with("/nushell") {
+            vec![shell, "-i".to_string()]
+        } else if shell.ends_with("/bash") || shell.ends_with("/zsh") {
+            vec![shell, "-i".to_string()]
+        } else {
+            vec![shell]
+        }
     } else {
         config.command.clone()
     };
@@ -372,7 +380,11 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
         }
     });
 
-    println!("\x1b[2m[tap: session {session_id}]\x1b[0m");
+    let shell_name = std::path::Path::new(&command[0])
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&command[0]);
+    println!("\x1b[2m[tap: {shell_name} · {session_id}]\x1b[0m");
 
     // Main I/O loop
     let mut master_file =
