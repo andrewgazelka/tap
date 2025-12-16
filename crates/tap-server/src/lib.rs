@@ -456,7 +456,7 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                                 tracing::debug!("OpenEditor action triggered!");
                                 let scrollback = SCROLLBACK.read();
                                 let scrollback_content = scrollback.get_lines(None);
-                                let (cursor_row, _cursor_col) = scrollback.cursor_position();
+                                let (cursor_row, cursor_col) = scrollback.cursor_position();
 
                                 // Calculate line number in scrollback content
                                 // cursor_row is relative to viewport, so we add scrollback lines
@@ -471,7 +471,7 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                                     &scrollback_content,
                                     &editor_cmd,
                                     orig_termios.as_ref(),
-                                    Some(cursor_line),
+                                    Some(tap_editor::Position::new(cursor_line, Some(cursor_col + 1))),
                                 ) {
                                     tracing::error!("failed to open editor: {e}");
                                 }

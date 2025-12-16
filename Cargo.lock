@@ -939,6 +939,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tap-editor"
+version = "0.1.0"
+
+[[package]]
 name = "tap-protocol"
 version = "0.1.0"
 dependencies = [
@@ -960,6 +964,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tap-config",
+ "tap-editor",
  "tap-protocol",
  "tempfile",
  "tokio",

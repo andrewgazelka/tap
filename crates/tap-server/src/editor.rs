@@ -4,16 +4,17 @@ use std::os::fd::BorrowedFd;
 
 use eyre::WrapErr as _;
 use std::io::Write as _;
+use tap_editor::Position;
 
 /// Open scrollback content in the configured editor.
 /// This function temporarily restores the terminal to cooked mode.
 ///
-/// If `cursor_line` is provided, the editor will open at that line number.
+/// If `cursor_pos` is provided, the editor will open at that position.
 pub fn open_scrollback_in_editor(
     scrollback_content: &str,
     editor_cmd: &str,
     orig_termios: Option<&nix::sys::termios::Termios>,
-    cursor_line: Option<usize>,
+    cursor_pos: Option<Position>,
 ) -> eyre::Result<()> {
     // Create temp file with scrollback content
     let mut temp_file = tempfile::NamedTempFile::new()
@@ -38,21 +39,14 @@ pub fn open_scrollback_in_editor(
         .split_first()
         .ok_or_else(|| eyre::eyre!("empty editor command — set $EDITOR or configure tap"))?;
 
+    // Build editor arguments with position support
+    let (pos_args, file_arg) = tap_editor::build_editor_args(cmd, &temp_path, cursor_pos);
+
     let mut command = std::process::Command::new(cmd);
     command.args(args.iter().copied());
+    command.args(pos_args);
+    command.arg(&file_arg);
 
-    // Add line number argument for vim/nvim (uses +{line} syntax)
-    if let Some(line) = cursor_line {
-        let cmd_name = std::path::Path::new(cmd)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(cmd);
-        if matches!(cmd_name, "vim" | "nvim" | "vi") {
-            command.arg(format!("+{line}"));
-        }
-    }
-
-    command.arg(&temp_path);
     let status = command
         .status()
         .wrap_err_with(|| format!("failed to spawn editor '{cmd}'"))?;
