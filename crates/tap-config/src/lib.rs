@@ -156,10 +156,7 @@ impl Keybind {
         const CTRL_MODIFIER: u32 = 5;
 
         // Must start with CSI (ESC [)
-        if bytes.len() < MIN_KITTY_SEQ_LEN
-            || bytes[0] != CSI_ESC
-            || bytes[1] != CSI_BRACKET
-        {
+        if bytes.len() < MIN_KITTY_SEQ_LEN || bytes[0] != CSI_ESC || bytes[1] != CSI_BRACKET {
             return None;
         }
 

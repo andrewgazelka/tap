@@ -4,7 +4,7 @@ mod editor;
 mod input;
 mod scrollback;
 
-use std::os::fd::{AsRawFd as _, FromRawFd as _};
+use std::os::fd::{AsRawFd as _, BorrowedFd, FromRawFd as _};
 
 use crossterm::execute;
 use eyre::WrapErr as _;
@@ -14,6 +14,46 @@ const DEFAULT_SHELL: &str = "/bin/sh";
 const HUMAN_ID_WORDS: usize = 3;
 const BROADCAST_CHANNEL_SIZE: usize = 1024;
 const IO_BUFFER_SIZE: usize = 4096;
+
+/// Atomically modify the sessions file with exclusive locking.
+fn modify_sessions_file(
+    path: &std::path::Path,
+    f: impl FnOnce(&mut Vec<serde_json::Value>),
+) -> eyre::Result<()> {
+    use std::io::{Read as _, Seek as _, Write as _};
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .wrap_err_with(|| format!("failed to open sessions file {}", path.display()))?;
+
+    file.lock()
+        .wrap_err_with(|| format!("failed to lock sessions file {}", path.display()))?;
+
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .wrap_err("failed to read sessions file")?;
+
+    let mut sessions: Vec<serde_json::Value> = if content.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&content).unwrap_or_default()
+    };
+
+    f(&mut sessions);
+
+    file.set_len(0).wrap_err("failed to truncate sessions file")?;
+    file.seek(std::io::SeekFrom::Start(0))
+        .wrap_err("failed to seek sessions file")?;
+    file.write_all(serde_json::to_string_pretty(&sessions).unwrap().as_bytes())
+        .wrap_err("failed to write sessions file")?;
+
+    // Lock released on drop
+    Ok(())
+}
 
 static SCROLLBACK: parking_lot::RwLock<scrollback::ScrollbackBuffer> =
     parking_lot::RwLock::new(scrollback::ScrollbackBuffer::new());
@@ -28,7 +68,7 @@ pub struct ServerConfig {
     pub session_id: Option<String>,
 }
 
-fn setup_terminal(fd: &std::os::fd::OwnedFd) -> nix::Result<nix::sys::termios::Termios> {
+fn setup_terminal(fd: BorrowedFd<'_>) -> nix::Result<nix::sys::termios::Termios> {
     let orig = nix::sys::termios::tcgetattr(fd)?;
     let mut raw = orig.clone();
     nix::sys::termios::cfmakeraw(&mut raw);
@@ -36,7 +76,7 @@ fn setup_terminal(fd: &std::os::fd::OwnedFd) -> nix::Result<nix::sys::termios::T
     Ok(orig)
 }
 
-fn restore_terminal(fd: &std::os::fd::OwnedFd, termios: &nix::sys::termios::Termios) {
+fn restore_terminal(fd: BorrowedFd<'_>, termios: &nix::sys::termios::Termios) {
     let _ = nix::sys::termios::tcsetattr(fd, nix::sys::termios::SetArg::TCSANOW, termios);
 }
 
@@ -97,10 +137,8 @@ async fn handle_client(
                             }
                             tap_protocol::Request::Inject { data } => {
                                 if let Some(&master_fd) = MASTER_FD.get() {
-                                    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(master_fd) };
-                                    let result = nix::unistd::write(&fd, data.as_bytes());
-                                    std::mem::forget(fd);
-                                    match result {
+                                    let fd = unsafe { BorrowedFd::borrow_raw(master_fd) };
+                                    match nix::unistd::write(fd, data.as_bytes()) {
                                         Ok(_) => tap_protocol::Response::Ok,
                                         Err(e) => tap_protocol::Response::Error { message: e.to_string() },
                                     }
@@ -196,8 +234,8 @@ fn wait_for_child(child: nix::unistd::Pid) -> i32 {
 pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
     // Load tap config for keybinds
     let tap_config = tap_config::load().wrap_err("failed to load tap configuration")?;
-    let mut input_processor = input::InputProcessor::new(&tap_config)
-        .wrap_err("failed to initialize input processor")?;
+    let mut input_processor =
+        input::InputProcessor::new(&tap_config).wrap_err("failed to initialize input processor")?;
     let editor_cmd = tap_config::get_editor(&tap_config);
 
     let session_id = config
@@ -215,23 +253,18 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
         config.command.clone()
     };
 
-    // Write session info
+    // Write session info (with file locking for concurrent access)
     let sessions_file = tap_protocol::sessions_file();
-    let mut sessions: Vec<serde_json::Value> = std::fs::read_to_string(&sessions_file)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    sessions.push(serde_json::json!({
-        "id": session_id,
-        "pid": std::process::id(),
-        "started": chrono::Utc::now().to_rfc3339(),
-        "command": command,
-    }));
-    std::fs::write(
-        &sessions_file,
-        serde_json::to_string_pretty(&sessions).unwrap(),
-    )
-    .wrap_err_with(|| format!("failed to write sessions file {}", sessions_file.display()))?;
+    let session_id_clone = session_id.clone();
+    let command_clone = command.clone();
+    modify_sessions_file(&sessions_file, |sessions| {
+        sessions.push(serde_json::json!({
+            "id": session_id_clone,
+            "pid": std::process::id(),
+            "started": chrono::Utc::now().to_rfc3339(),
+            "command": command_clone,
+        }));
+    })?;
 
     // Open PTY using openpty
     let ws = get_window_size();
@@ -296,16 +329,14 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
     drop(slave);
 
     // Save terminal state and set raw mode
-    let stdin_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(nix::libc::STDIN_FILENO) };
-    let orig_termios = match setup_terminal(&stdin_fd) {
+    let stdin_fd = unsafe { BorrowedFd::borrow_raw(nix::libc::STDIN_FILENO) };
+    let orig_termios = match setup_terminal(stdin_fd) {
         Ok(t) => Some(t),
         Err(e) => {
             tracing::debug!("not a terminal or failed to set raw mode: {e}");
             None
         }
     };
-    // Don't close stdin
-    std::mem::forget(stdin_fd);
 
     // Enable Kitty keyboard protocol for proper Alt-key detection
     let keyboard_enhanced = if orig_termios.is_some() {
@@ -344,9 +375,8 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
     println!("\x1b[2m[tap: session {session_id}]\x1b[0m");
 
     // Main I/O loop
-    let mut master_file = tokio::fs::File::from_std(unsafe {
-        std::fs::File::from_raw_fd(master.as_raw_fd())
-    });
+    let mut master_file =
+        tokio::fs::File::from_std(unsafe { std::fs::File::from_raw_fd(master.as_raw_fd()) });
     // Prevent double-close
     std::mem::forget(master);
 
@@ -391,12 +421,10 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                         match input_processor.process(input_bytes) {
                             input::InputResult::Passthrough(bytes) => {
                                 if !bytes.is_empty() {
-                                    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(master_raw_fd) };
-                                    if nix::unistd::write(&fd, &bytes).is_err() {
-                                        std::mem::forget(fd);
+                                    let fd = unsafe { BorrowedFd::borrow_raw(master_raw_fd) };
+                                    if nix::unistd::write(fd, &bytes).is_err() {
                                         break 1;
                                     }
-                                    std::mem::forget(fd);
                                 }
                             }
                             input::InputResult::Action(input::KeybindAction::OpenEditor) => {
@@ -425,9 +453,8 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                 if let input::InputResult::Passthrough(bytes) = input_processor.timeout_escape()
                     && !bytes.is_empty()
                 {
-                    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(master_raw_fd) };
-                    let _ = nix::unistd::write(&fd, &bytes);
-                    std::mem::forget(fd);
+                    let fd = unsafe { BorrowedFd::borrow_raw(master_raw_fd) };
+                    let _ = nix::unistd::write(fd, &bytes);
                 }
             }
         }
@@ -442,24 +469,17 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
 
     // Restore terminal
     if let Some(ref termios) = orig_termios {
-        let stdin_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(nix::libc::STDIN_FILENO) };
-        restore_terminal(&stdin_fd, termios);
-        std::mem::forget(stdin_fd);
+        let stdin_fd = unsafe { BorrowedFd::borrow_raw(nix::libc::STDIN_FILENO) };
+        restore_terminal(stdin_fd, termios);
     }
 
     // Clean up socket and session entry
     let _ = std::fs::remove_file(&socket_path);
 
-    // Remove session from sessions.json
-    if let Ok(content) = std::fs::read_to_string(&sessions_file)
-        && let Ok(mut sessions) = serde_json::from_str::<Vec<serde_json::Value>>(&content)
-    {
+    // Remove session from sessions.json (with file locking)
+    let _ = modify_sessions_file(&sessions_file, |sessions| {
         sessions.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(&session_id));
-        let _ = std::fs::write(
-            &sessions_file,
-            serde_json::to_string_pretty(&sessions).unwrap(),
-        );
-    }
+    });
 
     // Wait for child
     let final_code = wait_for_child(child_pid);

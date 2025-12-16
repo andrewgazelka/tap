@@ -1,6 +1,6 @@
 //! Editor integration for viewing scrollback.
 
-use std::os::fd::FromRawFd as _;
+use std::os::fd::BorrowedFd;
 
 use eyre::WrapErr as _;
 use std::io::Write as _;
@@ -24,15 +24,10 @@ pub fn open_scrollback_in_editor(
     let temp_path = temp_file.path().to_owned();
 
     // Restore terminal to cooked mode if we have original termios
-    let stdin_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(nix::libc::STDIN_FILENO) };
+    let stdin_fd = unsafe { BorrowedFd::borrow_raw(nix::libc::STDIN_FILENO) };
     if let Some(termios) = orig_termios {
-        let _ = nix::sys::termios::tcsetattr(
-            &stdin_fd,
-            nix::sys::termios::SetArg::TCSANOW,
-            termios,
-        );
+        let _ = nix::sys::termios::tcsetattr(stdin_fd, nix::sys::termios::SetArg::TCSANOW, termios);
     }
-    std::mem::forget(stdin_fd);
 
     // Parse editor command and spawn
     let parts: Vec<&str> = editor_cmd.split_whitespace().collect();
@@ -51,13 +46,12 @@ pub fn open_scrollback_in_editor(
     }
 
     // Restore raw mode
-    let stdin_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(nix::libc::STDIN_FILENO) };
-    let mut raw = nix::sys::termios::tcgetattr(&stdin_fd)
+    let stdin_fd = unsafe { BorrowedFd::borrow_raw(nix::libc::STDIN_FILENO) };
+    let mut raw = nix::sys::termios::tcgetattr(stdin_fd)
         .wrap_err("failed to get terminal attributes after editor")?;
     nix::sys::termios::cfmakeraw(&mut raw);
-    nix::sys::termios::tcsetattr(&stdin_fd, nix::sys::termios::SetArg::TCSANOW, &raw)
+    nix::sys::termios::tcsetattr(stdin_fd, nix::sys::termios::SetArg::TCSANOW, &raw)
         .wrap_err("failed to restore raw terminal mode")?;
-    std::mem::forget(stdin_fd);
 
     // Temp file is automatically deleted when temp_file drops
     Ok(())

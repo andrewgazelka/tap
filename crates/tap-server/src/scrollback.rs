@@ -56,10 +56,6 @@ impl ScrollbackBuffer {
         )
     }
 
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
-        self.parser = None;
-    }
 }
 
 #[cfg(test)]
@@ -98,15 +94,6 @@ mod tests {
         let (row, col) = buf.cursor_position();
         assert_eq!(row, 1);
         assert_eq!(col, 5);
-    }
-
-    #[test]
-    fn test_clear() {
-        let mut buf = ScrollbackBuffer::new();
-        buf.push(b"some content\r\n");
-        buf.clear();
-        assert_eq!(buf.get_lines(None), "");
-        assert_eq!(buf.cursor_position(), (0, 0));
     }
 
     #[test]
