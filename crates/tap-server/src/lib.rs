@@ -454,11 +454,24 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                             }
                             input::InputResult::Action(input::KeybindAction::OpenEditor) => {
                                 tracing::debug!("OpenEditor action triggered!");
-                                let scrollback_content = SCROLLBACK.read().get_lines(None);
+                                let scrollback = SCROLLBACK.read();
+                                let scrollback_content = scrollback.get_lines(None);
+                                let (cursor_row, _cursor_col) = scrollback.cursor_position();
+
+                                // Calculate line number in scrollback content
+                                // cursor_row is relative to viewport, so we add scrollback lines
+                                let total_lines = scrollback_content.lines().count();
+                                let viewport_height = 24; // DEFAULT_TERMINAL_ROWS
+                                let cursor_line =
+                                    total_lines.saturating_sub(viewport_height) + cursor_row + 1;
+
+                                drop(scrollback); // release lock before blocking on editor
+
                                 if let Err(e) = editor::open_scrollback_in_editor(
                                     &scrollback_content,
                                     &editor_cmd,
                                     orig_termios.as_ref(),
+                                    Some(cursor_line),
                                 ) {
                                     tracing::error!("failed to open editor: {e}");
                                 }
