@@ -90,8 +90,7 @@ pub fn translate_csi_u_to_traditional(data: &[u8]) -> Option<(Vec<u8>, usize)> {
     }
 
     // Handle letter keys (a-z, A-Z)
-    let is_letter =
-        (0x41..=0x5a).contains(&codepoint) || (0x61..=0x7a).contains(&codepoint);
+    let is_letter = (0x41..=0x5a).contains(&codepoint) || (0x61..=0x7a).contains(&codepoint);
     if is_letter {
         let c = codepoint as u8;
         if has_ctrl {

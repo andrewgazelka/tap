@@ -3,7 +3,7 @@
 mod editor;
 mod input;
 mod kitty;
-mod scrollback;
+pub mod scrollback;
 
 use std::os::fd::{AsRawFd as _, BorrowedFd, FromRawFd as _};
 
@@ -46,7 +46,8 @@ fn modify_sessions_file(
 
     f(&mut sessions);
 
-    file.set_len(0).wrap_err("failed to truncate sessions file")?;
+    file.set_len(0)
+        .wrap_err("failed to truncate sessions file")?;
     file.seek(std::io::SeekFrom::Start(0))
         .wrap_err("failed to seek sessions file")?;
     file.write_all(serde_json::to_string_pretty(&sessions).unwrap().as_bytes())

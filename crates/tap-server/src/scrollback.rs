@@ -57,7 +57,6 @@ impl ScrollbackBuffer {
             screen.cursor_position().1 as usize,
         )
     }
-
 }
 
 #[cfg(test)]

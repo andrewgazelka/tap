@@ -85,7 +85,10 @@ pub fn build_editor_args(
         EditorKind::VsCode => {
             // code -g file.txt:42:10
             let col = pos.col.unwrap_or(1);
-            (vec!["-g".to_string()], format!("{file_str}:{}:{col}", pos.line))
+            (
+                vec!["-g".to_string()],
+                format!("{file_str}:{}:{col}", pos.line),
+            )
         }
         EditorKind::Nano => {
             // nano +42,10 file.txt
@@ -120,14 +123,20 @@ mod tests {
         assert_eq!(EditorKind::detect("vim"), EditorKind::Vim);
         assert_eq!(EditorKind::detect("nvim"), EditorKind::Vim);
         assert_eq!(EditorKind::detect("/usr/bin/vim"), EditorKind::Vim);
-        assert_eq!(EditorKind::detect("/opt/homebrew/bin/nvim"), EditorKind::Vim);
+        assert_eq!(
+            EditorKind::detect("/opt/homebrew/bin/nvim"),
+            EditorKind::Vim
+        );
     }
 
     #[test]
     fn test_detect_vscode() {
         assert_eq!(EditorKind::detect("code"), EditorKind::VsCode);
         assert_eq!(EditorKind::detect("cursor"), EditorKind::VsCode);
-        assert_eq!(EditorKind::detect("/usr/local/bin/code"), EditorKind::VsCode);
+        assert_eq!(
+            EditorKind::detect("/usr/local/bin/code"),
+            EditorKind::VsCode
+        );
     }
 
     #[test]
@@ -140,7 +149,8 @@ mod tests {
 
     #[test]
     fn test_vim_args() {
-        let (args, file) = build_editor_args("vim", Path::new("/tmp/test.txt"), Some(Position::line(42)));
+        let (args, file) =
+            build_editor_args("vim", Path::new("/tmp/test.txt"), Some(Position::line(42)));
         assert_eq!(args, vec!["+42"]);
         assert_eq!(file, "/tmp/test.txt");
     }
@@ -158,7 +168,8 @@ mod tests {
 
     #[test]
     fn test_helix_args() {
-        let (args, file) = build_editor_args("hx", Path::new("/tmp/test.txt"), Some(Position::line(42)));
+        let (args, file) =
+            build_editor_args("hx", Path::new("/tmp/test.txt"), Some(Position::line(42)));
         assert!(args.is_empty());
         assert_eq!(file, "/tmp/test.txt:42");
     }
