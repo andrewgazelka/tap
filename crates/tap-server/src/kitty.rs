@@ -1,142 +1,9 @@
 //! Kitty keyboard protocol handling.
 //!
-//! This module handles translation between kitty keyboard protocol CSI u sequences
-//! and traditional terminal input, similar to how zellij handles it.
-
-/// Tracks whether the inner application has requested kitty keyboard protocol support.
-#[derive(Debug, Default)]
-pub struct KittyState {
-    /// Whether the inner app has enabled kitty keyboard protocol
-    pub inner_supports_kitty: bool,
-}
-
-impl KittyState {
-    pub const fn new() -> Self {
-        Self {
-            inner_supports_kitty: false,
-        }
-    }
-
-    /// Check PTY output for kitty keyboard protocol enable/disable sequences.
-    /// Updates internal state accordingly.
-    pub fn process_pty_output(&mut self, data: &[u8]) {
-        // Look for kitty keyboard protocol sequences in output:
-        // - CSI > Pu : push flags (enable if P > 0)
-        // - CSI < u  : pop flags (disable)
-        // - CSI = Pm : set mode (enable if P > 0)
-        // - CSI ? u  : query (we don't need to track this)
-        let mut i = 0;
-        while i < data.len() {
-            if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'[' {
-                // Log potential kitty sequences for debugging
-                let seq_preview: Vec<u8> = data[i..].iter().take(20).copied().collect();
-                tracing::debug!("checking PTY output for kitty seq at {}: {:02x?}", i, seq_preview);
-
-                if let Some((enabled, consumed)) = self.parse_kitty_sequence(&data[i..]) {
-                    if let Some(e) = enabled {
-                        let old = self.inner_supports_kitty;
-                        self.inner_supports_kitty = e;
-                        tracing::info!(
-                            "KITTY PROTOCOL: inner app {} kitty support (was: {})",
-                            if e { "ENABLED" } else { "DISABLED" },
-                            old
-                        );
-                    }
-                    i += consumed;
-                    continue;
-                }
-            }
-            i += 1;
-        }
-    }
-
-    /// Parse a kitty keyboard protocol sequence starting at the given position.
-    /// Returns (Some(enabled), bytes_consumed) if this is a kitty enable/disable sequence.
-    /// Returns (None, bytes_consumed) if this is a kitty sequence but doesn't change state.
-    fn parse_kitty_sequence(&self, data: &[u8]) -> Option<(Option<bool>, usize)> {
-        // Must start with ESC [
-        if data.len() < 3 || data[0] != 0x1b || data[1] != b'[' {
-            return None;
-        }
-
-        let rest = &data[2..];
-
-        // CSI > Pu - push keyboard mode
-        if rest.first() == Some(&b'>') {
-            return self.parse_push_sequence(rest);
-        }
-
-        // CSI < u - pop keyboard mode
-        if rest.first() == Some(&b'<') && rest.get(1) == Some(&b'u') {
-            return Some((Some(false), 4)); // ESC [ < u
-        }
-
-        // CSI = Pm - set keyboard mode
-        if rest.first() == Some(&b'=') {
-            return self.parse_set_sequence(rest);
-        }
-
-        None
-    }
-
-    fn parse_push_sequence(&self, rest: &[u8]) -> Option<(Option<bool>, usize)> {
-        // Format: > [number] u
-        // rest starts at '>'
-        let mut i = 1; // skip '>'
-        let mut num = 0u32;
-        let mut has_num = false;
-
-        while i < rest.len() {
-            match rest[i] {
-                b'0'..=b'9' => {
-                    num = num * 10 + (rest[i] - b'0') as u32;
-                    has_num = true;
-                    i += 1;
-                }
-                b'u' => {
-                    // ESC [ > [num] u
-                    let enabled = if has_num { num > 0 } else { false };
-                    return Some((Some(enabled), 2 + i + 1)); // ESC [ + rest consumed
-                }
-                b';' | b':' => {
-                    // Skip modifiers
-                    i += 1;
-                }
-                _ => break,
-            }
-        }
-        None
-    }
-
-    fn parse_set_sequence(&self, rest: &[u8]) -> Option<(Option<bool>, usize)> {
-        // Format: = [number] m
-        // rest starts at '='
-        let mut i = 1; // skip '='
-        let mut num = 0u32;
-        let mut has_num = false;
-
-        while i < rest.len() {
-            match rest[i] {
-                b'0'..=b'9' => {
-                    num = num * 10 + (rest[i] - b'0') as u32;
-                    has_num = true;
-                    i += 1;
-                }
-                b'm' => {
-                    // ESC [ = [num] m
-                    let enabled = if has_num { num > 0 } else { false };
-                    return Some((Some(enabled), 2 + i + 1)); // ESC [ + rest consumed
-                }
-                b';' | b':' => {
-                    // Skip additional params
-                    i += 1;
-                }
-                _ => break,
-            }
-        }
-        None
-    }
-}
+//! This module translates kitty keyboard protocol CSI u sequences to traditional
+//! terminal input. We always translate because PTYs don't emulate kitty protocol
+//! negotiation, so inner apps may not actually parse kitty input even if they
+//! send enable sequences.
 
 /// Translate a kitty CSI u sequence to traditional terminal input.
 /// Returns (translated_bytes, bytes_consumed) if successful.
@@ -253,8 +120,6 @@ pub fn translate_csi_u_to_traditional(data: &[u8]) -> Option<(Vec<u8>, usize)> {
         let c = codepoint as u8;
         if has_ctrl {
             // Some Ctrl combinations have special meanings
-            // Ctrl+[ = ESC, Ctrl+\ = FS, Ctrl+] = GS, Ctrl+^ = RS, Ctrl+_ = US
-            // Ctrl+@ = NUL, Ctrl+2 = NUL, Ctrl+6 = RS
             if c == b'[' {
                 result.push(0x1b);
             } else if c == b'\\' {
@@ -268,7 +133,6 @@ pub fn translate_csi_u_to_traditional(data: &[u8]) -> Option<(Vec<u8>, usize)> {
             } else if c == b'@' || c == b'2' {
                 result.push(0x00);
             } else {
-                // For other chars, just pass through with alt prefix if needed
                 if has_alt {
                     result.push(0x1b);
                 }
@@ -359,36 +223,22 @@ mod tests {
     }
 
     #[test]
-    fn test_kitty_state_push() {
-        let mut state = KittyState::new();
-        assert!(!state.inner_supports_kitty);
-
-        // Push with flags > 0 enables
-        state.process_pty_output(b"\x1b[>1u");
-        assert!(state.inner_supports_kitty);
-
-        // Pop disables
-        state.process_pty_output(b"\x1b[<u");
-        assert!(!state.inner_supports_kitty);
-    }
-
-    #[test]
-    fn test_kitty_state_set() {
-        let mut state = KittyState::new();
-
-        // Set mode with value > 0 enables
-        state.process_pty_output(b"\x1b[=1m");
-        assert!(state.inner_supports_kitty);
-
-        // Set mode with value 0 disables
-        state.process_pty_output(b"\x1b[=0m");
-        assert!(!state.inner_supports_kitty);
-    }
-
-    #[test]
     fn test_translate_all() {
         let input = b"hello\x1b[99;5uworld";
         let result = translate_all_csi_u(input);
         assert_eq!(result, b"hello\x03world");
+    }
+
+    #[test]
+    fn test_skip_kitty_protocol_sequences() {
+        // These should NOT be translated (they're protocol negotiation)
+        let push = b"\x1b[>1u";
+        assert!(translate_csi_u_to_traditional(push).is_none());
+
+        let pop = b"\x1b[<u";
+        assert!(translate_csi_u_to_traditional(pop).is_none());
+
+        let query = b"\x1b[?u";
+        assert!(translate_csi_u_to_traditional(query).is_none());
     }
 }

@@ -59,8 +59,6 @@ fn modify_sessions_file(
 static SCROLLBACK: parking_lot::RwLock<scrollback::ScrollbackBuffer> =
     parking_lot::RwLock::new(scrollback::ScrollbackBuffer::new());
 static MASTER_FD: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
-static KITTY_STATE: parking_lot::RwLock<kitty::KittyState> =
-    parking_lot::RwLock::new(kitty::KittyState::new());
 
 /// Configuration for starting a server session.
 #[derive(Debug, Clone, Default)]
@@ -409,9 +407,6 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                     Ok(n) => {
                         let data = master_buf[..n].to_vec();
 
-                        // Check for kitty keyboard protocol sequences from inner app
-                        KITTY_STATE.write().process_pty_output(&data);
-
                         // Update scrollback
                         SCROLLBACK.write().push(&data);
 
@@ -439,29 +434,20 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                         match input_processor.process(input_bytes) {
                             input::InputResult::Passthrough(bytes) => {
                                 if !bytes.is_empty() {
-                                    // If inner app doesn't support kitty protocol, translate
-                                    // CSI u sequences to traditional terminal input
-                                    let inner_supports_kitty = KITTY_STATE.read().inner_supports_kitty;
-                                    let bytes_to_send = if inner_supports_kitty {
+                                    // Always translate CSI u sequences to traditional terminal input.
+                                    // Even if the inner app sends kitty enable sequences, it may not
+                                    // actually parse kitty input (PTYs don't respond to protocol negotiation).
+                                    let translated = kitty::translate_all_csi_u(&bytes);
+                                    if translated != bytes {
                                         tracing::debug!(
-                                            "passthrough (kitty=true): {:02x?}",
-                                            bytes
+                                            "translated CSI u: {:02x?} -> {:02x?}",
+                                            bytes,
+                                            translated
                                         );
-                                        bytes
-                                    } else {
-                                        let translated = kitty::translate_all_csi_u(&bytes);
-                                        if translated != bytes {
-                                            tracing::debug!(
-                                                "translated CSI u: {:02x?} -> {:02x?}",
-                                                bytes,
-                                                translated
-                                            );
-                                        }
-                                        translated
-                                    };
+                                    }
 
                                     let fd = unsafe { BorrowedFd::borrow_raw(master_raw_fd) };
-                                    if nix::unistd::write(fd, &bytes_to_send).is_err() {
+                                    if nix::unistd::write(fd, &translated).is_err() {
                                         break 1;
                                     }
                                 }
@@ -492,13 +478,9 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                 if let input::InputResult::Passthrough(bytes) = input_processor.timeout_escape()
                     && !bytes.is_empty()
                 {
-                    let bytes_to_send = if KITTY_STATE.read().inner_supports_kitty {
-                        bytes
-                    } else {
-                        kitty::translate_all_csi_u(&bytes)
-                    };
+                    let translated = kitty::translate_all_csi_u(&bytes);
                     let fd = unsafe { BorrowedFd::borrow_raw(master_raw_fd) };
-                    let _ = nix::unistd::write(fd, &bytes_to_send);
+                    let _ = nix::unistd::write(fd, &translated);
                 }
             }
         }
