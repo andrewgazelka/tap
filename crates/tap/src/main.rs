@@ -91,9 +91,14 @@ async fn main() -> eyre::Result<()> {
     if args.debug {
         let log_dir = dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".tap");
+            .join(".tap")
+            .join("logs");
         std::fs::create_dir_all(&log_dir)?;
-        let log_file = std::fs::File::create(log_dir.join("debug.log"))?;
+
+        let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let log_filename = format!("{timestamp}.log");
+        let log_path = log_dir.join(&log_filename);
+        let log_file = std::fs::File::create(&log_path)?;
 
         tracing_subscriber::fmt()
             .with_writer(log_file)
@@ -101,7 +106,7 @@ async fn main() -> eyre::Result<()> {
             .with_max_level(tracing::Level::DEBUG)
             .init();
 
-        tracing::info!("debug logging enabled to ~/.tap/debug.log");
+        eprintln!("debug log: {}", log_path.display());
     } else {
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
