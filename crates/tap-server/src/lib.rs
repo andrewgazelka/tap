@@ -249,9 +249,9 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
 
     let command = if config.command.is_empty() {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string());
-        // Force interactive mode for shells that need it
+        // Force login/interactive mode for shells that need it to load config
         if shell.ends_with("/nu") || shell.ends_with("/nushell") {
-            vec![shell, "-i".to_string()]
+            vec![shell, "-l".to_string()] // nushell needs -l to load config.nu
         } else if shell.ends_with("/bash") || shell.ends_with("/zsh") {
             vec![shell, "-i".to_string()]
         } else {
