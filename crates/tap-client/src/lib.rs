@@ -137,8 +137,36 @@ impl Client {
         match response {
             Response::Output { data } => Ok(Some(data)),
             Response::Error { message } => Err(Error::Server(message)),
+            Response::SessionEnded { .. } => Ok(None),
             _ => Err(Error::Server("unexpected response".to_string())),
         }
+    }
+
+    /// Attach to the session (take over stdin/stdout).
+    /// Returns the initial scrollback content if successful.
+    pub async fn attach(&mut self, rows: u16, cols: u16) -> Result<String> {
+        let response = self.send_request(&Request::Attach { rows, cols }).await?;
+        match response {
+            Response::Attached { scrollback } => Ok(scrollback),
+            Response::Error { message } => Err(Error::Server(message)),
+            _ => Err(Error::Server("unexpected response".to_string())),
+        }
+    }
+
+    /// Send input to the PTY (for attached clients).
+    pub async fn send_input(&mut self, data: Vec<u8>) -> Result<()> {
+        let request = Request::Input { data };
+        let request_bytes = serde_json::to_vec(&request)?;
+        self.stream.get_mut().write_all(&request_bytes).await?;
+        Ok(())
+    }
+
+    /// Resize the PTY (for attached clients).
+    pub async fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+        let request = Request::Resize { rows, cols };
+        let request_bytes = serde_json::to_vec(&request)?;
+        self.stream.get_mut().write_all(&request_bytes).await?;
+        Ok(())
     }
 }
 

@@ -3,6 +3,7 @@
 use eyre::WrapErr as _;
 
 const DEFAULT_EDITOR_KEYBIND: &str = "Alt-e";
+const DEFAULT_DETACH_KEYBIND: &str = "Ctrl-\\";
 const DEFAULT_ESCAPE_TIMEOUT_MS: u64 = 50;
 const DEFAULT_EDITOR: &str = "vi";
 
@@ -27,6 +28,9 @@ pub struct KeybindConfig {
     /// Keybind to open scrollback in editor.
     /// Format: "Alt-e", "Ctrl-e", etc.
     pub editor: String,
+    /// Keybind to detach from session.
+    /// Format: "Ctrl-\\", etc.
+    pub detach: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -40,6 +44,7 @@ impl Default for KeybindConfig {
     fn default() -> Self {
         Self {
             editor: DEFAULT_EDITOR_KEYBIND.to_string(),
+            detach: DEFAULT_DETACH_KEYBIND.to_string(),
         }
     }
 }
@@ -94,8 +99,13 @@ pub enum Keybind {
 }
 
 impl Keybind {
-    /// Parse a keybind string like "Alt-e" or "Ctrl-e".
+    /// Parse a keybind string like "Alt-e" or "Ctrl-e" or "Ctrl-\\".
     pub fn parse(s: &str) -> eyre::Result<Self> {
+        // Handle special case of Ctrl-\ (backslash)
+        if s == "Ctrl-\\" || s == "ctrl-\\" {
+            return Ok(Keybind::Ctrl('\\'));
+        }
+
         let parts: Vec<&str> = s.split('-').collect();
         if parts.len() != 2 {
             eyre::bail!("invalid keybind format '{s}' — expected 'Alt-<key>' or 'Ctrl-<key>'");
@@ -264,5 +274,21 @@ mod tests {
         // Wrong modifier (Ctrl instead of Alt)
         let kitty_seq = b"\x1b[101;5u";
         assert_eq!(kb.matches(kitty_seq), None);
+    }
+
+    #[test]
+    fn test_keybind_parse_ctrl_backslash() {
+        let kb = Keybind::parse("Ctrl-\\").unwrap();
+        assert_eq!(kb, Keybind::Ctrl('\\'));
+        // Ctrl-\ is 0x1C (ASCII FS - File Separator)
+        assert_eq!(kb.matches(&[0x1c]), Some(1));
+    }
+
+    #[test]
+    fn test_default_detach_keybind() {
+        let config = Config::default();
+        assert_eq!(config.keybinds.detach, "Ctrl-\\");
+        let kb = Keybind::parse(&config.keybinds.detach).unwrap();
+        assert_eq!(kb, Keybind::Ctrl('\\'));
     }
 }

@@ -12,6 +12,7 @@ pub struct InputProcessor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeybindAction {
     OpenEditor,
+    Detach,
 }
 
 #[derive(Debug)]
@@ -30,6 +31,9 @@ impl InputProcessor {
 
         let editor_keybind = tap_config::Keybind::parse(&config.keybinds.editor)?;
         keybinds.push((editor_keybind, KeybindAction::OpenEditor));
+
+        let detach_keybind = tap_config::Keybind::parse(&config.keybinds.detach)?;
+        keybinds.push((detach_keybind, KeybindAction::Detach));
 
         Ok(Self {
             keybinds,

@@ -60,5 +60,5 @@
   <text class="title" x="280" y="95" font-family="system-ui, -apple-system, sans-serif" font-size="64" font-weight="700">tap</text>
 
   <!-- Subtitle -->
-  <text class="subtitle" x="280" y="130" font-family="system-ui, -apple-system, sans-serif" font-size="18">Let AI see your terminal</text>
+  <text class="subtitle" x="280" y="130" font-family="system-ui, -apple-system, sans-serif" font-size="18">Session manager for tiling WM users</text>
 </svg>

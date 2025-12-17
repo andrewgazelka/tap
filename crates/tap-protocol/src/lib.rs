@@ -7,6 +7,9 @@ pub struct Session {
     pub pid: u32,
     pub started: String,
     pub command: Vec<String>,
+    /// Whether a client is currently attached to this session.
+    #[serde(default)]
+    pub attached: bool,
 }
 
 /// Client requests to the server.
@@ -23,6 +26,17 @@ pub enum Request {
     GetSize,
     /// Subscribe to live output.
     Subscribe,
+    /// Attach to the session (take over stdin/stdout).
+    Attach {
+        /// Terminal rows.
+        rows: u16,
+        /// Terminal columns.
+        cols: u16,
+    },
+    /// Send input from attached client to PTY.
+    Input { data: Vec<u8> },
+    /// Resize the PTY from attached client.
+    Resize { rows: u16, cols: u16 },
 }
 
 /// Server responses.
@@ -39,6 +53,13 @@ pub enum Response {
     Output { data: Vec<u8> },
     /// Subscription confirmed.
     Subscribed,
+    /// Attach confirmed - client now owns stdin/stdout.
+    Attached {
+        /// Current scrollback content for initial display.
+        scrollback: String,
+    },
+    /// Session has ended (child process exited).
+    SessionEnded { exit_code: i32 },
     /// Success.
     Ok,
     /// Error.

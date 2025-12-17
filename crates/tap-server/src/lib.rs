@@ -1,15 +1,18 @@
 //! PTY wrapper server library for terminal introspection.
 
 mod editor;
-mod input;
+pub mod input;
 mod kitty;
 pub mod scrollback;
 
 use std::os::fd::{AsRawFd as _, BorrowedFd, FromRawFd as _};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::execute;
 use eyre::WrapErr as _;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::sync::Mutex;
 
 const DEFAULT_SHELL: &str = "/bin/sh";
 const HUMAN_ID_WORDS: usize = 3;
@@ -68,6 +71,8 @@ pub struct ServerConfig {
     pub command: Vec<String>,
     /// Custom session ID (auto-generated human-readable ID if None).
     pub session_id: Option<String>,
+    /// Start detached (no terminal attached).
+    pub detached: bool,
 }
 
 fn setup_terminal(fd: BorrowedFd<'_>) -> nix::Result<nix::sys::termios::Termios> {
@@ -96,22 +101,47 @@ fn set_window_size(fd: i32, ws: &nix::pty::Winsize) {
     }
 }
 
-extern "C" fn handle_sigwinch(_: nix::libc::c_int) {
-    if let Some(&master_fd) = MASTER_FD.get() {
-        let ws = get_window_size();
-        set_window_size(master_fd, &ws);
-    }
+fn set_window_size_raw(fd: i32, rows: u16, cols: u16) {
+    let ws = nix::pty::Winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    set_window_size(fd, &ws);
 }
 
-async fn handle_client(
+/// Channel for sending input to the PTY from attached clients.
+type InputSender = tokio::sync::mpsc::UnboundedSender<Vec<u8>>;
+type InputReceiver = tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>;
+
+/// Shared state for attached client.
+struct AttachedClient {
+    /// Sender for PTY output to the attached client.
+    output_tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+}
+
+/// Handle JSON protocol clients (scrollback queries, inject, etc.).
+async fn handle_json_client(
     mut stream: tokio::net::UnixStream,
     output_rx: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    input_tx: InputSender,
+    attached_client: Arc<Mutex<Option<AttachedClient>>>,
+    session_ended: Arc<AtomicBool>,
 ) {
     let mut buf = bytes::BytesMut::with_capacity(IO_BUFFER_SIZE);
     let mut output_rx = output_rx;
 
     loop {
         buf.clear();
+
+        if session_ended.load(Ordering::Relaxed) {
+            let response = tap_protocol::Response::SessionEnded { exit_code: 0 };
+            let response_bytes = serde_json::to_vec(&response).unwrap();
+            let _ = stream.write_all(&response_bytes).await;
+            let _ = stream.write_all(b"\n").await;
+            break;
+        }
 
         tokio::select! {
             result = stream.read_buf(&mut buf) => {
@@ -138,25 +168,140 @@ async fn handle_client(
                                 tap_protocol::Response::Cursor { row, col }
                             }
                             tap_protocol::Request::Inject { data } => {
+                                if input_tx.send(data.into_bytes()).is_ok() {
+                                    tap_protocol::Response::Ok
+                                } else {
+                                    tap_protocol::Response::Error { message: "session ended".to_string() }
+                                }
+                            }
+                            tap_protocol::Request::GetSize => {
                                 if let Some(&master_fd) = MASTER_FD.get() {
-                                    let fd = unsafe { BorrowedFd::borrow_raw(master_fd) };
-                                    match nix::unistd::write(fd, data.as_bytes()) {
-                                        Ok(_) => tap_protocol::Response::Ok,
-                                        Err(e) => tap_protocol::Response::Error { message: e.to_string() },
+                                    let mut ws: nix::pty::Winsize = unsafe { std::mem::zeroed() };
+                                    unsafe {
+                                        nix::libc::ioctl(master_fd, nix::libc::TIOCGWINSZ, &mut ws);
+                                    }
+                                    tap_protocol::Response::Size {
+                                        rows: ws.ws_row,
+                                        cols: ws.ws_col,
                                     }
                                 } else {
                                     tap_protocol::Response::Error { message: "no master FD".to_string() }
                                 }
                             }
-                            tap_protocol::Request::GetSize => {
-                                let ws = get_window_size();
-                                tap_protocol::Response::Size {
-                                    rows: ws.ws_row,
-                                    cols: ws.ws_col,
-                                }
-                            }
                             tap_protocol::Request::Subscribe => {
                                 tap_protocol::Response::Subscribed
+                            }
+                            tap_protocol::Request::Attach { rows, cols } => {
+                                // Check if already attached
+                                let mut attached = attached_client.lock().await;
+                                if attached.is_some() {
+                                    tap_protocol::Response::Error { message: "session already has attached client".to_string() }
+                                } else {
+                                    // Set up attached client
+                                    let (client_output_tx, mut client_output_rx) = tokio::sync::mpsc::unbounded_channel();
+                                    *attached = Some(AttachedClient { output_tx: client_output_tx });
+                                    drop(attached);
+
+                                    // Resize PTY to client's terminal size
+                                    if let Some(&master_fd) = MASTER_FD.get() {
+                                        set_window_size_raw(master_fd, rows, cols);
+                                    }
+
+                                    // Get current scrollback for initial display
+                                    let scrollback = SCROLLBACK.read().get_lines(None);
+
+                                    // Send attach response
+                                    let response = tap_protocol::Response::Attached { scrollback };
+                                    let response_bytes = serde_json::to_vec(&response).unwrap();
+                                    if stream.write_all(&response_bytes).await.is_err() {
+                                        let mut attached = attached_client.lock().await;
+                                        *attached = None;
+                                        break;
+                                    }
+                                    if stream.write_all(b"\n").await.is_err() {
+                                        let mut attached = attached_client.lock().await;
+                                        *attached = None;
+                                        break;
+                                    }
+
+                                    // Now switch to binary I/O mode for this client
+                                    // Split stream for bidirectional communication
+                                    let (mut read_half, mut write_half) = stream.into_split();
+
+                                    // Forward input from client to PTY
+                                    let input_tx_clone = input_tx.clone();
+                                    let attached_client_clone = attached_client.clone();
+                                    let session_ended_clone = session_ended.clone();
+                                    tokio::spawn(async move {
+                                        let mut buf = vec![0u8; IO_BUFFER_SIZE];
+                                        loop {
+                                            if session_ended_clone.load(Ordering::Relaxed) {
+                                                break;
+                                            }
+                                            match read_half.read(&mut buf).await {
+                                                Ok(0) => break,
+                                                Ok(n) => {
+                                                    // Parse as protocol message first
+                                                    if let Ok(request) = serde_json::from_slice::<tap_protocol::Request>(&buf[..n]) {
+                                                        match request {
+                                                            tap_protocol::Request::Input { data } => {
+                                                                if input_tx_clone.send(data).is_err() {
+                                                                    break;
+                                                                }
+                                                            }
+                                                            tap_protocol::Request::Resize { rows, cols } => {
+                                                                if let Some(&master_fd) = MASTER_FD.get() {
+                                                                    set_window_size_raw(master_fd, rows, cols);
+                                                                }
+                                                            }
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                }
+                                                Err(_) => break,
+                                            }
+                                        }
+                                        // Client disconnected - clear attached state
+                                        let mut attached = attached_client_clone.lock().await;
+                                        *attached = None;
+                                    });
+
+                                    // Forward output from PTY to client
+                                    loop {
+                                        tokio::select! {
+                                            Some(data) = client_output_rx.recv() => {
+                                                let response = tap_protocol::Response::Output { data };
+                                                let response_bytes = serde_json::to_vec(&response).unwrap();
+                                                if write_half.write_all(&response_bytes).await.is_err() {
+                                                    break;
+                                                }
+                                                if write_half.write_all(b"\n").await.is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            else => break,
+                                        }
+                                    }
+
+                                    // Session ended or client disconnected
+                                    return;
+                                }
+                            }
+                            tap_protocol::Request::Input { data } => {
+                                // Direct input (for non-attached clients)
+                                if input_tx.send(data).is_ok() {
+                                    tap_protocol::Response::Ok
+                                } else {
+                                    tap_protocol::Response::Error { message: "session ended".to_string() }
+                                }
+                            }
+                            tap_protocol::Request::Resize { rows, cols } => {
+                                if let Some(&master_fd) = MASTER_FD.get() {
+                                    set_window_size_raw(master_fd, rows, cols);
+                                    tap_protocol::Response::Ok
+                                } else {
+                                    tap_protocol::Response::Error { message: "no master FD".to_string() }
+                                }
                             }
                         };
 
@@ -197,6 +342,9 @@ async fn handle_client(
 async fn run_socket_server(
     socket_path: std::path::PathBuf,
     output_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    input_tx: InputSender,
+    attached_client: Arc<Mutex<Option<AttachedClient>>>,
+    session_ended: Arc<AtomicBool>,
 ) -> std::io::Result<()> {
     let _ = std::fs::remove_file(&socket_path);
     let std_listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
@@ -206,11 +354,24 @@ async fn run_socket_server(
     tracing::info!("listening on {}", socket_path.display());
 
     loop {
+        if session_ended.load(Ordering::Relaxed) {
+            break Ok(());
+        }
+
         match listener.accept().await {
             Ok((stream, _)) => {
                 tracing::debug!("client connected");
                 let output_rx = output_tx.subscribe();
-                tokio::spawn(handle_client(stream, output_rx));
+                let input_tx = input_tx.clone();
+                let attached_client = attached_client.clone();
+                let session_ended = session_ended.clone();
+                tokio::spawn(handle_json_client(
+                    stream,
+                    output_rx,
+                    input_tx,
+                    attached_client,
+                    session_ended,
+                ));
             }
             Err(e) => {
                 tracing::error!("accept error: {e}");
@@ -231,9 +392,16 @@ fn wait_for_child(child: nix::unistd::Pid) -> i32 {
     }
 }
 
+/// Result of running in attached mode.
+pub enum RunResult {
+    /// Session ended normally with exit code.
+    Exited(i32),
+    /// User detached from session.
+    Detached { session_id: String },
+}
+
 /// Run the PTY server with the given configuration.
-/// Returns the exit code of the child process.
-pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
+pub async fn run(config: ServerConfig) -> eyre::Result<RunResult> {
     // Load tap config for keybinds
     let tap_config = tap_config::load().wrap_err("failed to load tap configuration")?;
     let mut input_processor =
@@ -273,11 +441,22 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
             "pid": std::process::id(),
             "started": chrono::Utc::now().to_rfc3339(),
             "command": command_clone,
+            "attached": !config.detached,
         }));
     })?;
 
     // Open PTY using openpty
-    let ws = get_window_size();
+    let ws = if config.detached {
+        // Default size for detached sessions
+        nix::pty::Winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }
+    } else {
+        get_window_size()
+    };
     let nix::pty::OpenptyResult { master, slave } =
         nix::pty::openpty(Some(&ws), None).map_err(|e| eyre::eyre!("openpty failed: {e}"))?;
 
@@ -288,13 +467,21 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
         .set(master_raw_fd)
         .map_err(|_| eyre::eyre!("failed to set MASTER_FD — was run() called multiple times?"))?;
 
-    // Set up SIGWINCH handler
-    unsafe {
-        nix::sys::signal::signal(
-            nix::sys::signal::Signal::SIGWINCH,
-            nix::sys::signal::SigHandler::Handler(handle_sigwinch),
-        )
-        .map_err(|e| eyre::eyre!("failed to set SIGWINCH handler: {e}"))?;
+    // Set up SIGWINCH handler (only if attached)
+    if !config.detached {
+        unsafe {
+            extern "C" fn handle_sigwinch(_: nix::libc::c_int) {
+                if let Some(&master_fd) = MASTER_FD.get() {
+                    let ws = get_window_size();
+                    set_window_size(master_fd, &ws);
+                }
+            }
+            nix::sys::signal::signal(
+                nix::sys::signal::Signal::SIGWINCH,
+                nix::sys::signal::SigHandler::Handler(handle_sigwinch),
+            )
+            .map_err(|e| eyre::eyre!("failed to set SIGWINCH handler: {e}"))?;
+        }
     }
 
     // Fork child process
@@ -338,7 +525,78 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
     // Close slave in parent
     drop(slave);
 
-    // Save terminal state and set raw mode
+    // Set up broadcast channel for output
+    let (output_tx, _) = tokio::sync::broadcast::channel::<Vec<u8>>(BROADCAST_CHANNEL_SIZE);
+
+    // Set up input channel
+    let (input_tx, mut input_rx): (InputSender, InputReceiver) =
+        tokio::sync::mpsc::unbounded_channel();
+
+    // Attached client state
+    let attached_client: Arc<Mutex<Option<AttachedClient>>> = Arc::new(Mutex::new(None));
+    let session_ended = Arc::new(AtomicBool::new(false));
+
+    // Start server
+    let server_output_tx = output_tx.clone();
+    let server_socket_path = socket_path.clone();
+    let server_input_tx = input_tx.clone();
+    let server_attached_client = attached_client.clone();
+    let server_session_ended = session_ended.clone();
+    tokio::spawn(async move {
+        if let Err(e) = run_socket_server(
+            server_socket_path,
+            server_output_tx,
+            server_input_tx,
+            server_attached_client,
+            server_session_ended,
+        )
+        .await
+        {
+            tracing::error!("server error: {e}");
+        }
+    });
+
+    let shell_name = std::path::Path::new(&command[0])
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&command[0]);
+
+    // If starting detached, fork to background and return
+    if config.detached {
+        println!("\x1b[2m[tap: {shell_name} · {session_id} (detached)]\x1b[0m");
+
+        // Run PTY I/O loop in background
+        let master_file =
+            tokio::fs::File::from_std(unsafe { std::fs::File::from_raw_fd(master.as_raw_fd()) });
+        std::mem::forget(master);
+
+        let output_tx_clone = output_tx.clone();
+        let attached_client_clone = attached_client.clone();
+        let session_ended_clone = session_ended.clone();
+        let sessions_file_clone = sessions_file.clone();
+        let session_id_clone = session_id.clone();
+        let socket_path_clone = socket_path.clone();
+
+        tokio::spawn(async move {
+            run_pty_loop_detached(
+                master_file,
+                master_raw_fd,
+                input_rx,
+                output_tx_clone,
+                attached_client_clone,
+                session_ended_clone,
+                child_pid,
+                sessions_file_clone,
+                session_id_clone,
+                socket_path_clone,
+            )
+            .await;
+        });
+
+        return Ok(RunResult::Detached { session_id });
+    }
+
+    // Running attached - set up terminal
     let stdin_fd = unsafe { BorrowedFd::borrow_raw(nix::libc::STDIN_FILENO) };
     let orig_termios = match setup_terminal(stdin_fd) {
         Ok(t) => Some(t),
@@ -370,22 +628,6 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
         false
     };
 
-    // Set up broadcast channel for output
-    let (output_tx, _) = tokio::sync::broadcast::channel::<Vec<u8>>(BROADCAST_CHANNEL_SIZE);
-
-    // Start server
-    let server_output_tx = output_tx.clone();
-    let server_socket_path = socket_path.clone();
-    tokio::spawn(async move {
-        if let Err(e) = run_socket_server(server_socket_path, server_output_tx).await {
-            tracing::error!("server error: {e}");
-        }
-    });
-
-    let shell_name = std::path::Path::new(&command[0])
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(&command[0]);
     println!("\x1b[2m[tap: {shell_name} · {session_id}]\x1b[0m");
 
     // Main I/O loop
@@ -400,6 +642,7 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
     let mut master_buf = vec![0u8; IO_BUFFER_SIZE];
     let mut stdin_buf = vec![0u8; IO_BUFFER_SIZE];
 
+    let mut detached = false;
     let exit_code = loop {
         tokio::select! {
             result = master_file.read(&mut master_buf) => {
@@ -436,8 +679,6 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                             input::InputResult::Passthrough(bytes) => {
                                 if !bytes.is_empty() {
                                     // Always translate CSI u sequences to traditional terminal input.
-                                    // Even if the inner app sends kitty enable sequences, it may not
-                                    // actually parse kitty input (PTYs don't respond to protocol negotiation).
                                     let translated = kitty::translate_all_csi_u(&bytes);
                                     if translated != bytes {
                                         tracing::debug!(
@@ -459,14 +700,12 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                                 let scrollback_content = scrollback.get_lines(None);
                                 let (cursor_row, cursor_col) = scrollback.cursor_position();
 
-                                // Calculate line number in scrollback content
-                                // cursor_row is relative to viewport, so we add scrollback lines
                                 let total_lines = scrollback_content.lines().count();
-                                let viewport_height = 24; // DEFAULT_TERMINAL_ROWS
+                                let viewport_height = 24;
                                 let cursor_line =
                                     total_lines.saturating_sub(viewport_height) + cursor_row + 1;
 
-                                drop(scrollback); // release lock before blocking on editor
+                                drop(scrollback);
 
                                 if let Err(e) = editor::open_scrollback_in_editor(
                                     &scrollback_content,
@@ -476,6 +715,11 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                                 ) {
                                     tracing::error!("failed to open editor: {e}");
                                 }
+                            }
+                            input::InputResult::Action(input::KeybindAction::Detach) => {
+                                tracing::debug!("Detach action triggered!");
+                                detached = true;
+                                break 0;
                             }
                             input::InputResult::NeedMore => {
                                 // Wait for timeout or more input
@@ -487,6 +731,11 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
                         break 0;
                     }
                 }
+            }
+            Some(data) = input_rx.recv() => {
+                // Input from socket clients
+                let fd = unsafe { BorrowedFd::borrow_raw(master_raw_fd) };
+                let _ = nix::unistd::write(fd, &data);
             }
             _ = tokio::time::sleep(input_processor.escape_timeout()), if input_processor.has_pending_escape() => {
                 if let input::InputResult::Passthrough(bytes) = input_processor.timeout_escape()
@@ -513,6 +762,45 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
         restore_terminal(stdin_fd, termios);
     }
 
+    if detached {
+        // Update session to show detached
+        let _ = modify_sessions_file(&sessions_file, |sessions| {
+            for s in sessions.iter_mut() {
+                if s.get("id").and_then(|v| v.as_str()) == Some(&session_id) {
+                    s["attached"] = serde_json::json!(false);
+                }
+            }
+        });
+
+        println!("\n\x1b[2m[detached from {session_id}]\x1b[0m");
+
+        // Continue PTY server in background
+        let output_tx_clone = output_tx.clone();
+        let attached_client_clone = attached_client.clone();
+        let session_ended_clone = session_ended.clone();
+        let sessions_file_clone = sessions_file.clone();
+        let session_id_clone = session_id.clone();
+        let socket_path_clone = socket_path.clone();
+
+        tokio::spawn(async move {
+            run_pty_loop_detached(
+                master_file,
+                master_raw_fd,
+                input_rx,
+                output_tx_clone,
+                attached_client_clone,
+                session_ended_clone,
+                child_pid,
+                sessions_file_clone,
+                session_id_clone,
+                socket_path_clone,
+            )
+            .await;
+        });
+
+        return Ok(RunResult::Detached { session_id });
+    }
+
     // Clean up socket and session entry
     let _ = std::fs::remove_file(&socket_path);
 
@@ -525,8 +813,68 @@ pub async fn run(config: ServerConfig) -> eyre::Result<i32> {
     let final_code = wait_for_child(child_pid);
 
     if final_code == 0 && exit_code == 0 {
-        Ok(0)
+        Ok(RunResult::Exited(0))
     } else {
-        Ok(final_code)
+        Ok(RunResult::Exited(final_code))
     }
+}
+
+/// Run the PTY I/O loop in detached mode (no local terminal).
+async fn run_pty_loop_detached(
+    mut master_file: tokio::fs::File,
+    master_raw_fd: i32,
+    mut input_rx: InputReceiver,
+    output_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+    attached_client: Arc<Mutex<Option<AttachedClient>>>,
+    session_ended: Arc<AtomicBool>,
+    child_pid: nix::unistd::Pid,
+    sessions_file: std::path::PathBuf,
+    session_id: String,
+    socket_path: std::path::PathBuf,
+) {
+    let mut master_buf = vec![0u8; IO_BUFFER_SIZE];
+
+    loop {
+        tokio::select! {
+            result = master_file.read(&mut master_buf) => {
+                match result {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let data = master_buf[..n].to_vec();
+
+                        // Update scrollback
+                        SCROLLBACK.write().push(&data);
+
+                        // Broadcast to subscribers
+                        let _ = output_tx.send(data.clone());
+
+                        // Send to attached client if any
+                        if let Some(client) = attached_client.lock().await.as_ref() {
+                            let _ = client.output_tx.send(data);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("master read error: {e}");
+                        break;
+                    }
+                }
+            }
+            Some(data) = input_rx.recv() => {
+                let fd = unsafe { BorrowedFd::borrow_raw(master_raw_fd) };
+                let _ = nix::unistd::write(fd, &data);
+            }
+        }
+    }
+
+    // Mark session as ended
+    session_ended.store(true, Ordering::Relaxed);
+
+    // Clean up socket and session entry
+    let _ = std::fs::remove_file(&socket_path);
+    let _ = modify_sessions_file(&sessions_file, |sessions| {
+        sessions.retain(|s| s.get("id").and_then(|v| v.as_str()) != Some(&session_id));
+    });
+
+    // Wait for child
+    let _ = wait_for_child(child_pid);
 }
